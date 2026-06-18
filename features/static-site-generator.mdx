@@ -1,0 +1,167 @@
+---
+title: "Static Site Generator — WP SSR Framework"
+sidebarTitle: "SSG"
+description: "Generate pre-rendered static HTML snapshots for every page, serve them instantly to bots, and manage the cache from the WordPress admin dashboard."
+---
+
+The Static Site Generator (SSG) feature lets WP SSR pre-render every public page as a plain HTML file stored on disk. On every publish event — or on demand from the admin dashboard — the `StaticSiteGeneratorService` calls an external headless-browser rendering API, receives fully hydrated HTML, and writes it to the file-system cache. Search engine crawlers and other bots are then served that file directly with zero PHP overhead, while human visitors always receive the live PHP/React rendering.
+
+<Warning>
+  `WEB_RENDER_TOKEN` **must** be set in your `.env` file before using SSG. Without it, every generation attempt will throw a `RuntimeException` and no static file will be produced.
+</Warning>
+
+## How generation works
+
+<Steps>
+  <Step title="Trigger generation">
+    A post is published, the admin clicks **Generate All Pages**, or the daily cron fires. Any of these paths ultimately calls `StaticSiteGeneratorService::generatePostHTML(WP_Post $post)`.
+  </Step>
+  <Step title="Resolve the URL">
+    For `page` post types the service uses `WebRouter::slugToPath()` to convert the slug into the SPA route path, then prepends `get_home_url()`. For other post types it uses `get_post_permalink()`.
+  </Step>
+  <Step title="Call the rendering API">
+    `generateHTML(string $url)` POSTs to `https://api.ahon.dev/web/render` (or `http://127.0.0.1:8888/web/render` in development) with a Bearer token from `WEB_RENDER_TOKEN`.
+
+    ```php
+    $response = Http::withHeaders([
+        'Authorization' => 'Bearer ' . $token,
+        'Accept'        => 'application/json',
+        'Content-Type'  => 'application/json',
+    ])->post($endpoint, [
+        'url'        => $url,
+        'wait_until' => 'networkidle',
+        'timeout'    => 15000,
+        'viewport'   => ['width' => 1440, 'height' => 900],
+        'headers'    => ['Accept-Language' => 'fr-FR'],
+        'full_page'  => true,
+    ]);
+    ```
+  </Step>
+  <Step title="Write the file">
+    The returned HTML is written to `web/app/cache/client/static/{slug}.html` and three post-meta keys are updated.
+  </Step>
+</Steps>
+
+## Post meta keys
+
+Each generated page stores three meta entries in `wp_postmeta`:
+
+| Meta key | Content |
+|---|---|
+| `_ssg_cached_path` | Relative path to the static file, e.g. `/cache/client/static/home.html` |
+| `_ssg_last_cached` | MySQL datetime of the last successful generation |
+| `_ssg_content_hash` | `md5(post_content + post_modified)` — used to detect stale caches |
+
+The dashboard computes freshness by comparing `_ssg_content_hash` against the current `md5($post->post_content . $post->post_modified)`. If they differ the row shows **⚠️ Needs generation**.
+
+## Bot detection and cache serving
+
+`BotDetector::isBot()` inspects the `User-Agent` header against an extensive keyword list that includes major search engines (Googlebot, bingbot, YandexBot…), AI crawlers (GPTBot, Claude-Web, PerplexityBot…), social-media link-previewers (facebookexternalhit, Twitterbot, LinkedInBot…) and generic patterns (`bot`, `crawl`, `spider`, `curl`, `wget`, and more).
+
+When a bot is detected the static file is served directly and a `X-SSG-Cache: HIT` response header is added. Human visitors bypass the cache entirely and always receive the live PHP/React rendering pipeline.
+
+```php
+// Conceptual flow inside the web router
+if (BotDetector::isBot()) {
+    $cachedPath = get_post_meta($post->ID, '_ssg_cached_path', true);
+    if ($cachedPath && file_exists(app_root($cachedPath))) {
+        header('X-SSG-Cache: HIT');
+        readfile(app_root($cachedPath));
+        exit;
+    }
+}
+// Fall through to live PHP/React rendering
+```
+
+## Triggering generation programmatically
+
+```php
+use Ahon\WPCMS\App\Services\StaticSiteGeneratorService;
+
+// Resolve the service from the container
+$generator = app(StaticSiteGeneratorService::class);
+
+// Generate a single post by WP_Post object
+$post = get_post(42);
+$html = $generator->generatePostHTML($post);
+
+// Store custom HTML for a post (skips the API call)
+$relativePath = $generator->storeHTML($post, $html);
+
+// Delete the cached file and clear all meta
+$generator->deleteCachedFile($post);
+
+// Wipe everything — all static files + all SSG meta rows
+$generator->clearAll();
+```
+
+## REST API endpoints
+
+The admin dashboard uses two authenticated REST endpoints (nonce-protected via `X-WP-Nonce`):
+
+<CodeGroup>
+```bash Generate a single page
+curl -X POST https://example.com/api/v1/ssg/page \
+  -H "Content-Type: application/json" \
+  -H "X-WP-Nonce: <wp_rest_nonce>" \
+  -d '{"id": 42}'
+```
+
+```bash Delete a cached file
+curl -X DELETE https://example.com/api/v1/ssg/delete \
+  -H "Content-Type: application/json" \
+  -H "X-WP-Nonce: <wp_rest_nonce>" \
+  -d '{"id": 42}'
+```
+</CodeGroup>
+
+Both endpoints are handled by `SSGController`:
+
+| Method | Route | Handler | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/ssg/page` | `SSGController::page()` | Generate (or regenerate) HTML for a single post by `id` |
+| `DELETE` | `/api/v1/ssg/delete` | `SSGController::delete()` | Delete the cached file and clear all SSG meta for a post by `id` |
+
+## Admin dashboard
+
+Navigate to **WordPress Admin → SSG** to access the full dashboard.
+
+<CardGroup cols={2}>
+  <Card title="Status panel" icon="chart-bar">
+    Displays the last generation timestamp and a colour-coded status badge: **Complete** (green), **Pending** (amber), **Need generation** (red), or **Not cached** (grey).
+  </Card>
+  <Card title="Generate All Pages" icon="bolt">
+    Iterates every cacheable item in sequence, shows a live progress bar (0 → 100 %), and logs each result with a timestamp.
+  </Card>
+  <Card title="Bulk actions" icon="list-check">
+    Select individual pages with checkboxes. **Regenerate Selected** and **Delete Selected** (red) operate on the checked rows with the same progress/log UI.
+  </Card>
+  <Card title="Per-page status" icon="table">
+    Each row shows the title, post type, cached file path, last-cached datetime, and a status icon — **✅ Up-to-date** or **⚠️ Needs generation**.
+  </Card>
+</CardGroup>
+
+The admin bar also shows a persistent SSG badge: ✅ (green) when all pages are up-to-date, or a pulsing ⚠️ (red) when regeneration is needed.
+
+## Daily cron
+
+The SSG service provider registers a WordPress cron event on the `ssg_daily_generation` hook:
+
+```php
+// Enable the cron
+if (! wp_next_scheduled('ssg_daily_generation')) {
+    wp_schedule_event(time(), 'daily', 'ssg_daily_generation');
+}
+
+// Disable the cron
+$timestamp = wp_next_scheduled('ssg_daily_generation');
+if ($timestamp) {
+    wp_unschedule_event($timestamp, 'ssg_daily_generation');
+}
+```
+
+The cron can also be toggled from the dashboard with the **Enable daily automatic generation (midnight)** checkbox. When it fires, `SSGServiceProvider::runScheduledGeneration()` loops through every cacheable item, calls the rendering API for each one, and updates the `ssg_last_generation` and `ssg_generation_status` options.
+
+<Tip>
+  On large sites the daily cron might time out if many pages need re-generation. Consider using the REST API endpoints in an external queue worker for large-scale generation jobs.
+</Tip>

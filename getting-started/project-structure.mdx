@@ -1,0 +1,169 @@
+---
+title: "WP SSR Framework Project Structure Explained"
+sidebarTitle: "Project Structure"
+description: "A full walkthrough of the Bedrock directory layout, the wp-ssr mu-plugin internals, and the separation between framework src/ and application app/ code."
+---
+
+WP SSR Framework inherits the opinionated Bedrock folder layout and extends it with a dedicated mu-plugin directory that contains the entire framework. Understanding where each piece lives is essential before writing controllers, defining routes, or registering custom post types. This page maps every directory, explains the separation between framework internals (`src/`) and your application code (`app/`), and clarifies how the React SPA in `web/client/` connects to the PHP backend.
+
+## Full directory tree
+
+```
+portfolio-v2/                        ← Project root
+├── composer.json                    ← Root Composer manifest (Bedrock)
+├── .env                             ← Environment variables (gitignored)
+├── .env.example                     ← Env template committed to git
+│
+├── config/                          ← PHP configuration
+│   ├── application.php              ← Base config (all environments)
+│   └── environments/
+│       ├── development.php          ← Dev overrides (WP_DEBUG, etc.)
+│       └── staging.php              ← Staging overrides
+│
+└── web/                             ← Document root (point your web server here)
+    ├── wp/                          ← WordPress core (managed by Composer)
+    ├── wp-config.php                ← Thin shim — loads Bedrock config
+    ├── index.php                    ← WordPress front-controller
+    │
+    ├── app/                         ← Bedrock content directory (WP_CONTENT_DIR)
+    │   ├── mu-plugins/
+    │   │   └── wp-ssr/              ← ★ The WP SSR Framework mu-plugin
+    │   │       ├── wp-ssr.php       ← Plugin entry point & Kernel bootstrap
+    │   │       ├── composer.json    ← Framework dependencies (Acorn, ext-acf…)
+    │   │       ├── src/             ← Framework internals (do not edit)
+    │   │       ├── app/             ← Application code (controllers, providers…)
+    │   │       └── configuration/   ← Routes, post types, options pages
+    │   │
+    │   ├── plugins/                 ← Standard WordPress plugins (via Composer)
+    │   ├── themes/                  ← WordPress themes
+    │   ├── uploads/                 ← User-uploaded media
+    │   └── cache/                   ← Framework cache storage
+    │
+    └── client/                      ← React 19 + Vite SPA
+        ├── package.json             ← Node dependencies (React, Tailwind, etc.)
+        ├── index.html               ← SPA shell template
+        ├── src/                     ← React source (components, pages, hooks)
+        └── dist/                    ← Production build output (served by PHP)
+```
+
+## Top-level directories
+
+<Accordion title="config/ — PHP environment configuration">
+  Bedrock separates configuration from code. `config/application.php` sets WordPress constants that apply to **all** environments (database credentials, URLs, security salts, hardened production defaults). Environment-specific overrides live in `config/environments/`. The active environment is selected by the `WP_ENV` variable; if no matching override file exists, only `application.php` is loaded — which means production settings are the safe default.
+
+  You can add your own environment file (e.g. `config/environments/local.php`) and Bedrock will load it automatically when `WP_ENV=local`.
+</Accordion>
+
+<Accordion title="web/wp/ — WordPress core">
+  WordPress core is **never committed to git**. It is installed entirely by Composer (`roots/wordpress 6.9.1`) into `web/wp/` via the `wordpress-install-dir` extra in `composer.json`. Upgrading WordPress is a one-line Composer change. Never manually edit files inside `web/wp/`.
+</Accordion>
+
+<Accordion title="web/app/ — Content directory">
+  Bedrock remaps `WP_CONTENT_DIR` to `web/app/` (the constant `CONTENT_DIR` is `/app`). This keeps WordPress core and application content cleanly separated. Plugins go in `web/app/plugins/`, themes in `web/app/themes/`, and mu-plugins in `web/app/mu-plugins/`. Bedrock's autoloader ensures every directory inside `mu-plugins/` is treated as a must-use plugin.
+</Accordion>
+
+<Accordion title="web/client/ — React SPA">
+  The React 19 + Vite application lives here. It is a fully independent Node project with its own `package.json` and `bun.lock`. In development, `bun run dev` starts the Vite HMR server; the PHP `Vite` helper (`src/SSR/Vite.php`) injects the correct script tags into the SPA shell. In production, `bun run build` outputs compiled assets to `web/client/dist/`, which the PHP kernel references directly via the Vite manifest.
+
+  The SPA reads initial page data from `window.__PAGE_DATA__` injected server-side by each `WebController`, allowing the first render to be data-complete without an extra fetch.
+</Accordion>
+
+## Inside `web/app/mu-plugins/wp-ssr/`
+
+This is the heart of the framework. It is structured as a standard Composer package with a clear boundary between internals and application code:
+
+```
+wp-ssr/
+├── wp-ssr.php            ← Entry point: Acorn boot + Kernel::configure()->boot()
+├── composer.json         ← Declares src/ → Ahon\WPCMS\, app/ → Ahon\WPCMS\App\
+│
+├── src/                  ← Framework internals (Ahon\WPCMS\)
+│   ├── Kernel.php        ← Orchestrates all providers, routers, ORM, options
+│   ├── Base/             ← Shared base classes
+│   ├── Composers/        ← View composer system (ComposerManager)
+│   ├── Controllers/      ← Base controller classes (WebController, ApiController)
+│   ├── Eloquent/         ← EloquentCPT ORM (EloquentCPT, EloquentManager, QueryBuilder)
+│   ├── Exceptions/       ← ValidationException and other typed exceptions
+│   ├── Middlewares/      ← BaseMiddleware contract
+│   ├── Options/          ← ACF options page registration (Option, WP_Options)
+│   ├── PostType/         ← Custom post type base (PostType)
+│   ├── Providers/        ← ServiceProvider base + ProviderManager
+│   ├── Requests/         ← ApiRequest, RequestValidator
+│   ├── Routing/
+│   │   ├── Api/          ← ApiRouter, ApiRoute, ApiRouteDefinition
+│   │   └── Web/          ← WebRouter, WebRoute, WebRouteDefinition, BotDetector
+│   ├── Service/          ← Service base class + ServicesContainer
+│   └── SSR/              ← Vite integration + client.php SPA shell renderer
+│
+├── app/                  ← Application code (Ahon\WPCMS\App\)
+│   ├── helpers.php       ← plugin_root(), app_root(), client_root() helpers
+│   ├── Composers/        ← AppComposer (view data injection)
+│   ├── Console/Commands/ ← WP-CLI commands (GeneratePostTypes, SyncPages)
+│   ├── Controllers/
+│   │   ├── AppController.php       ← Shared base for app controllers
+│   │   ├── Web/                    ← Web route controllers (Home, Blog, Service…)
+│   │   └── Api/                    ← REST API controllers (ContactController)
+│   ├── Middlewares/      ← App-level middleware (HealthAuthGuard)
+│   ├── PostTypes/        ← Eloquent post type models (Article, Realisation, Service)
+│   ├── Providers/        ← App service providers (Routing, SEO, SSG, Cache…)
+│   ├── Requests/         ← Typed API request classes (ContactRequest, DevisRequest)
+│   └── Services/         ← Business logic (ContactService, TelegramNotificationService…)
+│
+└── configuration/        ← Declarative configuration files
+    ├── routes/
+    │   ├── web.php       ← Web route definitions (WebRouter)
+    │   └── api.php       ← REST API route definitions (ApiRouter)
+    ├── posts/
+    │   ├── article.php   ← ACF field group for Article post type
+    │   ├── realisations.php ← ACF field group for Realisation post type
+    │   └── service.php   ← ACF field group for Service post type
+    ├── posts.php          ← Registers all post types from posts/
+    ├── pages.php          ← Auto-registers WordPress pages (development only)
+    └── options.php        ← ACF options/settings pages
+```
+
+## `src/` vs `app/` — the core distinction
+
+<CardGroup cols={2}>
+  <Card title="src/ — Framework internals" icon="lock">
+    Everything under `src/` belongs to the `Ahon\WPCMS` namespace and forms the framework's public API surface. These classes define the contracts — `WebController`, `ApiController`, `EloquentCPT`, `BaseServiceProvider`, `ApiRequest` — that your application code extends or implements. **Do not modify files inside `src/`**; treat them as a vendor library. Changes here affect the entire framework and will be overwritten when the framework is updated.
+  </Card>
+  <Card title="app/ — Application code" icon="pencil">
+    Everything under `app/` belongs to the `Ahon\WPCMS\App` namespace and is where you write your application. Add new web controllers in `app/Controllers/Web/`, new API controllers in `app/Controllers/Api/`, new Eloquent post type models in `app/PostTypes/`, and new service providers in `app/Providers/`. Register them in the corresponding `configuration/` files and in the `Kernel::configure()->withProviders([])` call in `wp-ssr.php`.
+  </Card>
+</CardGroup>
+
+## `configuration/` — declarative route and post-type registration
+
+The `configuration/` directory contains plain PHP files that return or call registration functions. They are loaded by the relevant service providers at boot time:
+
+- **`configuration/routes/web.php`** — loaded by `RoutingServiceProvider`; maps URL patterns to `WebController` classes using the `WebRouter` API.
+- **`configuration/routes/api.php`** — loaded by `RoutingServiceProvider`; maps REST endpoints to `ApiController` classes.
+- **`configuration/posts.php`** — loaded by `PostType::init()`; calls `PostType::register()` for each custom post type model in `app/PostTypes/`.
+- **`configuration/posts/*.php`** — individual files (e.g. `article.php`) define the ACF field group for each post type using `vinkla/extended-acf` typed PHP objects.
+- **`configuration/options.php`** — loaded by `Option::init()`; registers ACF options pages visible in wp-admin.
+- **`configuration/pages.php`** — auto-creates WordPress pages on boot; active only in `development` to scaffold pages without manual admin work.
+
+<Note>
+  The `configuration/` files are intentionally simple and declarative. If you need complex logic at registration time (conditional routes, dynamic fields), put that logic in a `ServiceProvider` and call your configuration file from its `register()` or `boot()` method.
+</Note>
+
+## Path helper functions
+
+Three global helper functions defined in `app/helpers.php` provide framework-aware absolute paths you can use anywhere in application code:
+
+```php
+// Absolute path inside the wp-ssr mu-plugin
+plugin_root('/src/Kernel.php');
+// → /var/www/web/app/mu-plugins/wp-ssr/src/Kernel.php
+
+// Absolute path inside web/app/ (Bedrock content dir)
+app_root('/mu-plugins/wp-ssr/configuration/routes/web.php');
+// → /var/www/web/app/mu-plugins/wp-ssr/configuration/routes/web.php
+
+// Absolute path inside web/client/ (React SPA)
+client_root('/dist/.vite/manifest.json');
+// → /var/www/web/client/dist/.vite/manifest.json
+```
+
+These helpers resolve paths relative to the active WordPress theme directory (`get_template_directory()`) and normalise directory separators for cross-platform compatibility.

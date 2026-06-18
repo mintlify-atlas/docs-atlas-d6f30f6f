@@ -1,0 +1,96 @@
+---
+title: "WP SSR Framework — Headless WordPress SPA Engine"
+sidebarTitle: "Introduction"
+description: "WP SSR Framework is a headless WordPress mu-plugin that intercepts PHP requests, routes them to typed controllers, and hydrates a React 19 SPA with server-injected JSON data."
+---
+
+WP SSR Framework turns a standard Bedrock WordPress installation into a full-featured headless SPA engine — without abandoning the WordPress admin or the PHP ecosystem. Rather than treating WordPress purely as a REST API backend, the framework's custom PHP kernel intercepts every incoming web request at the `wp_loaded` hook, matches it against a typed route registry, and invokes the appropriate controller. That controller compiles a JSON data payload which is server-injected directly into the React 19 SPA shell returned to the browser, eliminating a round-trip client fetch on first load. Search-engine crawlers and social-media bots receive pre-rendered static HTML snapshots instead of the SPA shell, giving you full SEO control without a Node.js SSR server.
+
+## What WP SSR Framework provides
+
+<CardGroup cols={2}>
+  <Card title="Web Router" icon="route">
+    A Laravel-style PHP web router (`WebRouter`) registered on `wp_loaded`. Define typed routes in `configuration/routes/web.php` and map them to dedicated `WebController` classes with full dependency injection.
+  </Card>
+  <Card title="REST API Router" icon="plug">
+    A separate `ApiRouter` registers namespaced REST endpoints under `api/v1` via `rest_api_init`. Each endpoint maps to an `ApiController` with automatic request validation through typed `ApiRequest` classes.
+  </Card>
+  <Card title="EloquentCPT ORM" icon="database">
+    `EloquentCPT` brings an Eloquent-style model layer to WordPress custom post types. Query posts with a fluent builder, cast meta fields, and define relationships — all without writing raw `WP_Query` calls.
+  </Card>
+  <Card title="ACF Field Groups in PHP" icon="code">
+    Powered by `vinkla/extended-acf`, post-type field groups are declared as typed PHP objects in `configuration/posts/`. No ACF JSON files, no sync conflicts.
+  </Card>
+  <Card title="Static Site Generation (SSG)" icon="bolt">
+    `SSGServiceProvider` and `StaticSiteGeneratorService` trigger `https://api.ahon.dev/web/render` to generate static HTML snapshots on content publish. Snapshots are served to bots by `BotDetector` in the web router.
+  </Card>
+  <Card title="SEO Dashboard" icon="chart-bar">
+    `SEOServiceProvider` registers ACF-backed SEO fields and options pages for per-page meta titles, descriptions, and Open Graph data — all editable through the WordPress admin.
+  </Card>
+  <Card title="Service Providers" icon="layers">
+    A `ProviderManager` bootstraps application concerns (routing, caching, analytics, rate-limiting) through isolated `ServiceProvider` classes — the same pattern used by Laravel and Roots Acorn.
+  </Card>
+  <Card title="WP-CLI Commands" icon="terminal">
+    Built-in Acorn-powered CLI commands such as `GeneratePostTypes` and `SyncPages` let you scaffold boilerplate and sync WordPress pages from the terminal.
+  </Card>
+</CardGroup>
+
+## Architecture at a glance
+
+The framework sits entirely inside `web/app/mu-plugins/wp-ssr/` and is autoloaded by Bedrock on every request. WordPress acts as the CMS and database layer. The `Kernel` class wires together all service providers and hooks the routers into the WordPress action system. The React SPA (located in `web/client/`) is built with Vite and served as a static shell; the PHP kernel injects a `window.__PAGE_DATA__` JSON blob that the SPA reads to populate its initial state without an additional API call.
+
+```
+Browser request
+    │
+    ▼
+WordPress bootstrap (Bedrock)
+    │
+    ▼
+Kernel::boot()  ──► ServiceProviders registered
+    │
+    ▼
+wp_loaded  ──► WebRouter::handleRequest()
+    │                │
+    │          Route matched?
+    │          ├─ Yes ──► WebController::handle()
+    │          │               │
+    │          │          BotDetector
+    │          │          ├─ Bot  ──► Static HTML snapshot
+    │          │          └─ Human ──► React SPA + JSON payload
+    │          └─ No  ──► WordPress fallback
+    │
+    ▼
+rest_api_init  ──► ApiRouter registers /wp-json/api/v1/* endpoints
+```
+
+## Requirements
+
+<Note>
+  All of the following must be present before the WP SSR Kernel will boot. Missing any requirement causes WordPress to die with a descriptive error message.
+</Note>
+
+| Requirement | Version | Notes |
+|---|---|---|
+| PHP | `>= 8.1` | Required by root `composer.json` |
+| WordPress | `6.x` via Bedrock | Installed to `web/wp` by Composer (`roots/wordpress 6.9.1`) |
+| Roots Acorn | `^5.0` | Provides the service container and Blade engine |
+| ACF Pro | Latest | Required for `acf_add_options_page()` — kernel halts without it |
+| Composer | `^2` | All PHP dependencies are managed via Composer |
+| Node.js / Bun | Latest LTS | For building the React SPA in `web/client/` |
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Clone the repo, install dependencies, configure your `.env`, and run WordPress core install.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/concepts/architecture">
+    Deep-dive into how the Kernel, service providers, and routers interact at boot time.
+  </Card>
+  <Card title="Web Routing" icon="route" href="/concepts/web-routing">
+    Define web routes, create controllers, and inject server-side data into the React SPA.
+  </Card>
+  <Card title="Post Types & ORM" icon="database" href="/concepts/post-types-orm">
+    Declare custom post types with ACF field groups and query them with EloquentCPT.
+  </Card>
+</CardGroup>

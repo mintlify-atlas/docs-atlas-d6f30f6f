@@ -1,72 +1,96 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "WP SSR Framework",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#545cdc",
+    "light": "#a4acec",
+    "dark": "#838ce8"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://media.brand.dev/85dfebd1-0480-492c-99d8-1273908d8103.png",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/8c0c1266-dede-49b0-8f81-a8c28370d014.svg",
+    "dark": "https://media.brand.dev/8c0c1266-dede-49b0-8f81-a8c28370d014.svg"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/Ahondev/portfolio-v2"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/Ahondev/portfolio-v2"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "getting-started/installation",
+              "getting-started/configuration",
+              "getting-started/project-structure"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/kernel-providers",
+              "concepts/web-routing",
+              "concepts/api-routing",
+              "concepts/post-types-orm"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/static-site-generator",
+              "features/seo-management",
+              "features/analytics",
+              "features/cache",
+              "features/contact-forms"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "frontend/react-spa",
+              "frontend/wp-sync",
+              "frontend/vite-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "PHP API",
+            "pages": [
+              "reference/kernel",
+              "reference/web-route",
+              "reference/api-route",
+              "reference/post-type",
+              "reference/query-builder",
+              "reference/service-provider",
+              "reference/request-validator"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/environment-variables",
+              "reference/wp-options"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

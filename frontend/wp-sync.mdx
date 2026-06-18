@@ -1,0 +1,196 @@
+---
+title: "WP Sync: Bridging WordPress Data and React"
+sidebarTitle: "WP Sync"
+description: "The wp-sync module connects WordPress server-rendered JSON globals to the React SPA, handling boot, navigation, prefetch, and typed data access."
+---
+
+`wp-sync.ts` is the bridge between the PHP world and the React SPA. When WordPress renders a page, it injects `window.__wp_data__`, `window.__wp_view__`, and `window.__wp_seo__` into the HTML shell. `wp-sync` reads these globals, resolves the correct React page component, and orchestrates soft navigation for subsequent route changes — all without full page reloads.
+
+## Types
+
+```typescript wp-sync.ts
+export type WPData = Record<string, any>
+
+export type WPPagePayload = {
+    view: string
+    data: WPData
+}
+```
+
+The `WPData` type is intentionally loose — each page component should narrow it with a concrete interface using the `useWPData<T>()` generic.
+
+## Exported API
+
+### `boot()`
+
+Called once on initial page load. Reads the window globals set by the PHP shell, populates the in-memory URL cache with the current page's data, and mounts the React app.
+
+```typescript
+export async function boot(): Promise<void>
+```
+
+`boot()` is called from `main.tsx` and should never be called again after that.
+
+### `navigate(rawUrl, force?, replace?)`
+
+Soft-navigates to a URL by fetching `{url}?json=1` with `X-WP-SPA: 1` header, updating window globals, resolving the view component, and re-rendering React in place.
+
+```typescript
+export async function navigate(
+    rawUrl: string,
+    force?: boolean,   // default false — skip if already on this URL
+    replace?: boolean  // default false — use replaceState instead of pushState
+): Promise<void>
+```
+
+<ParamField path="rawUrl" type="string" required>
+  The destination URL. Trailing slashes are stripped; empty paths become `"/"`.
+</ParamField>
+
+<ParamField path="force" type="boolean">
+  If `true`, navigates even when the destination URL matches the current URL. Default: `false`.
+</ParamField>
+
+<ParamField path="replace" type="boolean">
+  If `true`, replaces the current history entry instead of pushing a new one (used for `popstate`). Default: `false`.
+</ParamField>
+
+### `prefetch(rawUrl)`
+
+Pre-warms the page data cache for a URL without navigating to it. Called automatically on `mouseover` for all internal links.
+
+```typescript
+export function prefetch(rawUrl: string): void
+```
+
+Prefetch is a no-op if the URL is already cached or if a fetch is already in flight.
+
+### `getWPView()`
+
+Returns the current view name string set by WordPress.
+
+```typescript
+export function getWPView(): string
+// returns window.__wp_view__ ?? "not-found"
+```
+
+### `getWPData<T>()`
+
+Returns the current page data typed as `T`.
+
+```typescript
+export function getWPData<T = WPData>(): T
+// returns window.__wp_data__ ?? {}
+```
+
+### `useWPData<T>()`
+
+React hook that wraps `getWPData`. Use this inside page components to read typed data injected by the PHP controller.
+
+```typescript
+export function useWPData<T = WPData>(): T
+```
+
+**Usage example:**
+
+```typescript BlogPost.tsx
+import { useWPData } from "@/lib/wp-sync"
+
+type BlogPostData = {
+    title: string
+    content: string
+    readTime: string
+    excerpt: string
+    date: string
+}
+
+export default function BlogPost() {
+    const data = useWPData<BlogPostData>()
+
+    return (
+        <article>
+            <h1>{data.title}</h1>
+            <p className="read-time">{data.readTime}</p>
+            <div dangerouslySetInnerHTML={{ __html: data.content }} />
+        </article>
+    )
+}
+```
+
+### `setWPPage(payload)`
+
+Manually updates the window globals. Useful in testing or for programmatic navigation where you already have the page data.
+
+```typescript
+export function setWPPage(payload: WPPagePayload): void
+```
+
+### `resolveView()`
+
+Asynchronously resolves the React component for the current view name by looking it up in `routes.ts`. Falls back to `NotFound` if the view is not registered.
+
+```typescript
+export async function resolveView(): Promise<React.ComponentType>
+```
+
+### `debugWP()`
+
+Logs `window.__wp_view__` and `window.__wp_data__` to the console. Only runs when `import.meta.env.DEV` is `true`.
+
+```typescript
+export function debugWP(): void
+```
+
+## Link interception
+
+`wp-router.tsx` installs two global event listeners:
+
+- **`click`**: intercepts clicks on internal `<a>` tags and calls `navigate(link.href)` instead of following the link.
+- **`mouseover`**: calls `prefetch(link.href)` to pre-warm the cache.
+- **`popstate`**: calls `navigate(location.href, true, true)` to handle browser back/forward navigation.
+
+A link is considered internal if all of these are true:
+- `link.target !== "_blank"`
+- `link.origin === location.origin`
+- No `download` attribute
+- `rel` is not `"external"`
+
+<Note>
+You do not need to use any special link component — standard `<a>` tags are automatically intercepted. External links, download links, and `target="_blank"` links pass through normally.
+</Note>
+
+## Page data cache
+
+The router maintains two `Map` instances:
+
+| Map | Key | Value |
+|-----|-----|-------|
+| `cache` | Normalized URL path | `PageData` (view + data + seo) |
+| `pending` | Normalized URL path | `Promise<PageData>` (in-flight fetch) |
+
+URL normalization strips trailing slashes and resolves relative paths against `location.origin`. The root path is always normalized to `"/"`.
+
+The cache is never invalidated during a session — a full page reload is required to pick up fresh data from WordPress.
+
+## JSON response contract
+
+When a page is fetched with `?json=1`, the PHP controller must return a JSON response with this shape:
+
+```json
+{
+    "view": "blog_single",
+    "data": {
+        "title": "My Post",
+        "content": "<p>...</p>",
+        "readTime": "5 min"
+    },
+    "seo": {
+        "site_title": "My Site",
+        "page_title": "My Post",
+        "description": "...",
+        "url": "https://example.com/blog/my-post"
+    }
+}
+```
+
+The `view` string must match a key in `routes.ts`. The `data` object is passed verbatim to `window.__wp_data__`.

@@ -1,20 +1,71 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "WP SSR Framework: Headless Static-Hybrid WordPress"
+sidebarTitle: "Home"
+description: "A headless WordPress framework that renders React SPAs via PHP controllers, with a built-in router, Eloquent-style ORM, SSG caching, SEO tooling, and a full REST API layer."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+WP SSR Framework turns WordPress into a headless CMS powerhouse. It intercepts every request at the PHP level, routes it through typed controllers, renders a React 19 + Vite SPA with server-injected data, and optionally snapshots pages to static HTML for instant bot delivery — all without touching a WordPress theme.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Set up Bedrock, configure your environment, and boot the framework kernel in minutes.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how the kernel, providers, web router, and React SPA fit together.
+  </Card>
+  <Card title="Web Routing" icon="route" href="/concepts/web-routing">
+    Define page routes and custom post type routes with a Laravel-style fluent API.
+  </Card>
+  <Card title="Post Types & ORM" icon="database" href="/concepts/post-types-orm">
+    Register ACF-backed custom post types and query them with the EloquentCPT builder.
+  </Card>
+  <Card title="Static Site Generator" icon="bolt" href="/features/static-site-generator">
+    Cache any page as static HTML and serve it to crawlers with zero latency.
+  </Card>
+  <Card title="PHP API Reference" icon="code" href="/reference/kernel">
+    Full reference for Kernel, Route, PostType, QueryBuilder, and every public class.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## How it works
+
+<Steps>
+  <Step title="WordPress receives a request">
+    Bedrock boots WordPress. The `wp-ssr` mu-plugin registers the kernel and all service providers on `wp_loaded`.
+  </Step>
+  <Step title="The web router matches the URL">
+    `WebRouter` compares the request URI against your registered routes and CPT paths. Matching requests are handed to a PHP controller — WordPress theme rendering never runs.
+  </Step>
+  <Step title="The controller builds the page payload">
+    Your controller queries custom post types via `EloquentCPT`, assembles SEO metadata, and passes a `__wp_data__` JSON payload to the React shell template.
+  </Step>
+  <Step title="React mounts and hydrates">
+    The browser receives an HTML shell containing `window.__wp_data__` and `window.__wp_view__`. The Vite-built SPA boots, resolves the correct page component, and mounts — no full reload required for subsequent navigations.
+  </Step>
+  <Step title="Bots get static HTML">
+    On publish, the SSG service calls an external headless-browser API to snapshot the rendered page and writes it to `web/app/cache/client/static/`. Detected bots receive this file directly with an `X-SSG-Cache: HIT` header.
+  </Step>
+</Steps>
+
+## Key capabilities
+
+<CardGroup cols={3}>
+  <Card title="PHP Web Router" icon="arrow-right-arrow-left">
+    Route-based controller dispatch with CPT archive/single support and bot-aware static cache serving.
+  </Card>
+  <Card title="REST API Router" icon="plug">
+    Register versioned REST endpoints under `/api/v1` with middleware, auth guards, and automatic wildcard expansion.
+  </Card>
+  <Card title="EloquentCPT ORM" icon="layer-group">
+    Fluent query builder with `where`, `taxonomy`, `with` eager loading, `search`, and `matchSlugs`.
+  </Card>
+  <Card title="ACF Field Groups" icon="table-columns">
+    Define ACF Pro field groups entirely in PHP alongside your post type registration — no admin UI required.
+  </Card>
+  <Card title="SEO Dashboard" icon="chart-line">
+    Per-post SEO score, missing field warnings, and an admin dashboard for global SEO health.
+  </Card>
+  <Card title="SSG Admin Panel" icon="file-code">
+    One-click or scheduled static generation for all cacheable pages with per-page status tracking.
+  </Card>
+</CardGroup>

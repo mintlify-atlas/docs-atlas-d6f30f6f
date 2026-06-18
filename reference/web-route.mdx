@@ -1,0 +1,188 @@
+---
+title: "WebRoute — Frontend SPA Routing"
+sidebarTitle: "WebRoute"
+description: "WebRoute registers PHP-rendered SPA page routes, CPT archives and singles, and route groups for the WP SSR Framework web router."
+---
+
+`WebRoute` is the static façade for the WP SSR web router. Every frontend URL — whether a plain page, a Custom Post Type archive, or a CPT single — is declared here. When a request arrives, `WebRouter::handleRequest()` matches the URI against registered routes, instantiates the appropriate controller, and calls the mapped method, whose return value is `echo`-ed directly to the browser.
+
+Routes are loaded from `configuration/routes/web.php` during the `wp_loaded` hook at priority 5.
+
+---
+
+## `WebRoute::get()`
+
+Registers a `GET` route that renders a static page.
+
+```php
+WebRoute::get(string $path, string $name, array $controller): WebRouteDefinition
+```
+
+<ParamField body="path" type="string" required>
+  The URI path to match, beginning with `/`. For example `'/'` or `'/contact'`.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  A human-readable label for this page. In development mode, a WordPress page is auto-created with this title.
+</ParamField>
+
+<ParamField body="controller" type="array" required>
+  A two-element array: `[ControllerClass::class, 'methodName']`. The method receives no arguments and must return an HTML string.
+</ParamField>
+
+```php
+use Ahon\WPCMS\Routing\Web\WebRoute as Route;
+
+Route::get('/', 'Accueil', [HomeController::class, 'home']);
+Route::get('/contact', 'Contact', [HomeController::class, 'contact']);
+```
+
+---
+
+## `WebRoute::post()`
+
+Registers a `POST` route, typically used for form submissions handled server-side.
+
+```php
+WebRoute::post(string $path, string $controller, string $name, bool $auth = false): WebRouteDefinition
+```
+
+<ParamField body="path" type="string" required>
+  The URI path to match.
+</ParamField>
+
+<ParamField body="controller" type="string" required>
+  The controller class name (not an array — pass the class string directly).
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Human-readable label for the route.
+</ParamField>
+
+<ParamField body="auth" type="boolean" default="false">
+  Reserved for future authentication gating on web POST routes.
+</ParamField>
+
+---
+
+## `WebRoute::CPT()`
+
+Registers a Custom Post Type base path that automatically handles both the **archive** (`/services`) and any **single** (`/services/my-service`).
+
+```php
+WebRoute::CPT(string $path, string $postType, string $controller): void
+```
+
+<ParamField body="path" type="string" required>
+  The base URI prefix, e.g. `'/services'`. A trailing slash is stripped automatically.
+</ParamField>
+
+<ParamField body="postType" type="string" required>
+  The EloquentCPT subclass for this post type (e.g. `Service::class`). The class must expose a `static string $model` property containing the WP post type slug.
+</ParamField>
+
+<ParamField body="controller" type="string" required>
+  The controller class name. The class must expose:
+  - `archive(): string` — rendered for the base path.
+  - `single(?EloquentCPT $post): string` — rendered for individual slugs. Receives `null` when the post is not found.
+</ParamField>
+
+<Note>
+  In the `development` environment, `CPT()` also calls `registerPage()` to create a WordPress page for the archive slug, enabling native WordPress preview.
+</Note>
+
+```php
+use Ahon\WPCMS\App\PostTypes\Service;
+use Ahon\WPCMS\App\Controllers\Web\ServiceController;
+
+Route::CPT('/services', Service::class, ServiceController::class);
+```
+
+---
+
+## `WebRoute::group()`
+
+Prepends a common path prefix to a set of already-registered routes, identified by their route IDs.
+
+```php
+WebRoute::group(string $prefix, array $route_ids): void
+```
+
+<ParamField body="prefix" type="string" required>
+  The path prefix to prepend, e.g. `'/blog'`.
+</ParamField>
+
+<ParamField body="route_ids" type="array" required>
+  An array of integer route IDs returned from previous `get()` or `post()` calls.
+</ParamField>
+
+<Note>
+  Route IDs are the internal integer keys assigned when routes are stored. Currently the router keys routes by their `path` string, so `group()` is most useful when building nested route hierarchies.
+</Note>
+
+---
+
+## `WebRouteDefinition` properties
+
+Every call to `get()` or `post()` returns a `WebRouteDefinition` instance with the following public properties:
+
+<ResponseField name="httpMethod" type="HttpMethod">
+  The HTTP method enum value (`HttpMethod::GET` or `HttpMethod::POST`).
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Human-readable route name / page title.
+</ResponseField>
+
+<ResponseField name="path" type="string">
+  The URI path this route matches, e.g. `'/contact'`.
+</ResponseField>
+
+<ResponseField name="controller" type="class-string">
+  Fully-qualified class name of the controller that handles this route.
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  The controller method to invoke, e.g. `'home'` or `'contact'`.
+</ResponseField>
+
+---
+
+## Complete `web.php` example
+
+This is the full `configuration/routes/web.php` from the reference application:
+
+```php configuration/routes/web.php
+<?php
+
+use Ahon\WPCMS\App\Controllers\Web\HomeController;
+use Ahon\WPCMS\App\Controllers\Web\BlogController;
+use Ahon\WPCMS\App\Controllers\Web\RealisationController;
+use Ahon\WPCMS\App\Controllers\Web\ServiceController;
+use Ahon\WPCMS\App\PostTypes\Article;
+use Ahon\WPCMS\App\PostTypes\Realisation;
+use Ahon\WPCMS\App\PostTypes\Service;
+use Ahon\WPCMS\Routing\Web\WebRoute as Route;
+
+// Static page routes
+Route::get('/', 'Accueil', [HomeController::class, 'home']);
+Route::get('/agence', 'Agence', [HomeController::class, 'agence']);
+Route::get('/devis', 'Devis', [HomeController::class, 'devis']);
+Route::get('/contact', 'Contact', [HomeController::class, 'contact']);
+
+// CPT routes (archive + single)
+Route::CPT('/services', Service::class, ServiceController::class);
+Route::CPT('/realisations', Realisation::class, RealisationController::class);
+Route::CPT('/blog', Article::class, BlogController::class);
+```
+
+---
+
+## How request handling works
+
+When a request hits `wp_loaded`, `WebRouter::handleRequest()` executes the following logic:
+
+1. **Ignored paths** — URIs beginning with `/wp/`, `/api/`, `/uploads/`, `/admin`, or `/client` are skipped immediately.
+2. **Bot / SSG cache** — If a bot user-agent is detected and a pre-rendered `.html` file exists in the static cache directory, it is served with `X-SSG-Cache: HIT` and WordPress is bypassed.
+3. **Static route match** — The current URI is looked up in the registered routes map. On a match, the controller method is called and its output is echoed.
+4. **CPT archive / single match** — The URI is compared against CPT base paths. Exact matches call `archive()`; prefix matches resolve the slug to a WP post, wrap it in the EloquentCPT model, and call `single($post)`.

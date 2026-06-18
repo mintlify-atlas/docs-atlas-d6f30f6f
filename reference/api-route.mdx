@@ -1,0 +1,211 @@
+---
+title: "ApiRoute — REST API Route Registration"
+sidebarTitle: "ApiRoute"
+description: "ApiRoute registers REST API endpoints under /api/v1, supporting all HTTP verbs, wildcard segments, authentication guards, and custom middleware chains."
+---
+
+`ApiRoute` is the static façade for the WP SSR REST API router. It wraps WordPress's `register_rest_route()` with a fluent, Laravel-inspired API and mounts all endpoints under the `api/v1` namespace. Routes are loaded on the `rest_api_init` hook at priority 30, making them available at `/wp-json/api/v1/` — or at `/api/v1/` when WordPress rewrite rules are configured.
+
+Routes are declared in two files:
+- `src/_configuration/routes/api.php` — internal framework routes (e.g. SSG endpoints).
+- `configuration/routes/api.php` — application-level routes (your controllers).
+
+---
+
+## HTTP verb methods
+
+All five verb methods share the same signature:
+
+```php
+ApiRoute::get(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+ApiRoute::post(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+ApiRoute::put(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+ApiRoute::patch(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+ApiRoute::delete(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+```
+
+<ParamField body="path" type="string" required>
+  The route path relative to `api/v1`. Supports `{param}` wildcard segments (see below). Example: `'/posts/{slug}'`.
+</ParamField>
+
+<ParamField body="controller" type="array" required>
+  A two-element array: `[ControllerClass::class, 'methodName']`. The controller method receives a `WP_REST_Request` instance.
+</ParamField>
+
+<ParamField body="auth" type="boolean" default="false">
+  When `true`, the permission callback checks `is_user_logged_in()` and rejects unauthenticated requests with `false`.
+</ParamField>
+
+<CodeGroup>
+```php GET route
+Route::get('/configuration/analytics', [AppController::class, 'analytics']);
+```
+
+```php POST route (no auth)
+Route::post('/contact', [ContactController::class, 'contact']);
+```
+
+```php GET route (auth-guarded)
+Route::get('/dashboard/stats', [StatsController::class, 'index'], true);
+```
+</CodeGroup>
+
+---
+
+## `ApiRoute::group()`
+
+Prepends a common prefix to an array of `ApiRouteDefinition` instances. Call it after all the child routes have been created.
+
+```php
+ApiRoute::group(string $prefix, array $routeDefinitions): void
+```
+
+<ParamField body="prefix" type="string" required>
+  The path segment to prepend to every route in the group, e.g. `'/ssg'`.
+</ParamField>
+
+<ParamField body="routeDefinitions" type="array" required>
+  An array of `ApiRouteDefinition` objects returned by the verb methods.
+</ParamField>
+
+```php
+Route::group('/ssg', [
+    Route::post('/page',   [SSGController::class, 'page']),
+    Route::post('/all',    [SSGController::class, 'all']),
+    Route::delete('/delete', [SSGController::class, 'delete']),
+]);
+// Results in: POST /api/v1/ssg/page, POST /api/v1/ssg/all, DELETE /api/v1/ssg/delete
+```
+
+---
+
+## `->middlewares()` fluent method
+
+Attaches one or more middleware classes to a route. Middlewares are evaluated in the `permission_callback` before the controller is invoked.
+
+```php
+->middlewares(array $middlewares): ApiRouteDefinition
+```
+
+<ParamField body="middlewares" type="array" required>
+  An array of middleware class names (strings) or pre-instantiated objects. Each middleware must expose a `handle(WP_REST_Request $request): bool|WP_Error` method. Returning `false` or a `WP_Error` denies the request.
+</ParamField>
+
+```php
+Route::get('/health', [AppController::class, 'health'])
+    ->middlewares([
+        Ahon\WPCMS\App\Middlewares\HealthAuthGuard::class,
+    ]);
+```
+
+<Tip>
+  Middlewares are additive. Calling `->middlewares()` multiple times merges the arrays via `array_merge()`, so you can chain calls or extend a base definition.
+</Tip>
+
+---
+
+## Wildcard segments
+
+Path segments wrapped in curly braces are converted to named regex capture groups by the router:
+
+```
+{slug}  →  (?P<slug>[a-zA-Z0-9-]+)
+```
+
+Captured values are available in the controller via `$request->get_param('slug')`.
+
+```php
+Route::get('/posts/{slug}', [PostController::class, 'show']);
+
+// In PostController:
+public function show(WP_REST_Request $request): WP_REST_Response
+{
+    $slug = $request->get_param('slug'); // e.g. "my-first-post"
+    // ...
+}
+```
+
+<Note>
+  Wildcards currently match alphanumeric characters and hyphens only (`[a-zA-Z0-9-]+`). For other character sets, register the route directly with `register_rest_route()`.
+</Note>
+
+---
+
+## `ApiRouteDefinition` properties
+
+<ResponseField name="routeID" type="string">
+  A unique identifier for this route, derived from `base64_encode(httpMethod + path)`. Used by `group()` for route lookup.
+</ResponseField>
+
+<ResponseField name="httpMethod" type="HttpMethod">
+  The HTTP verb enum (`HttpMethod::GET`, `POST`, `PUT`, `PATCH`, or `DELETE`).
+</ResponseField>
+
+<ResponseField name="path" type="string">
+  The registered path (after any `group()` prefix has been applied).
+</ResponseField>
+
+<ResponseField name="controller" type="class-string">
+  Fully-qualified class name of the controller.
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  The controller method name to call.
+</ResponseField>
+
+<ResponseField name="auth" type="boolean">
+  Whether WordPress authentication (`is_user_logged_in()`) is required.
+</ResponseField>
+
+<ResponseField name="middlewares" type="array">
+  Ordered list of middleware class names or instances attached via `->middlewares()`.
+</ResponseField>
+
+---
+
+## Complete `api.php` example
+
+<CodeGroup>
+```php configuration/routes/api.php
+<?php
+
+use Ahon\WPCMS\App\Controllers\Api\ContactController;
+use Ahon\WPCMS\App\Controllers\AppController;
+use Ahon\WPCMS\Routing\Api\ApiRoute as Route;
+
+/**
+ * API Routes
+ * Access via /wp-json/api/v1 or /api/v1 with rewrite rules
+ */
+
+Route::post('/contact', [ContactController::class, 'contact']);
+Route::post('/devis',   [ContactController::class, 'devis']);
+```
+
+```php src/_configuration/routes/api.php (SSG internal)
+<?php
+
+use Ahon\WPCMS\Controllers\Api\SSGController;
+use Ahon\WPCMS\Routing\Api\ApiRoute as Route;
+
+Route::group('/ssg', [
+    Route::post('/page',   [SSGController::class, 'page']),
+    Route::post('/all',    [SSGController::class, 'all']),
+    Route::delete('/delete', [SSGController::class, 'delete']),
+]);
+```
+</CodeGroup>
+
+---
+
+## Permission callback flow
+
+For every registered route, the `permission_callback` evaluates the following in order:
+
+1. If `$route->auth === true` and `is_user_logged_in()` returns `false` → deny (`false`).
+2. For each middleware in `$route->middlewares`:
+   - Instantiate if the value is a class name string.
+   - Call `$instance->handle($request)`.
+   - If the result is a `WP_Error` → return the error (surfaces as a REST error response).
+   - If the result is `false` → deny.
+3. All checks passed → allow (`true`).

@@ -1,0 +1,223 @@
+---
+title: "Contact Forms — WP SSR Framework"
+sidebarTitle: "Contact Forms"
+description: "Two validated REST endpoints for contact and quote requests, with ACF storage, custom post statuses, and instant Telegram notifications."
+---
+
+WP SSR provides two ready-to-use REST API endpoints for handling inbound contact and quote (devis) requests from the React front-end. Each endpoint validates its payload using a dedicated request class, stores the submission as a WordPress custom post, updates ACF fields with all the form data, and immediately fires a Telegram notification. Submissions are managed in the admin with two custom post statuses and a **Mark as handled** row action.
+
+## Environment variables
+
+Both endpoints require Telegram credentials to be present in `.env`:
+
+| Variable | Description |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | The token issued by [@BotFather](https://t.me/BotFather) for your Telegram bot |
+| `TELEGRAM_CHAT_ID` | The numeric chat or channel ID where notifications should be sent |
+
+<Warning>
+  If either variable is missing, `TelegramNotificationService::sendNotification()` will silently fail — no exception is thrown, but the message will not be delivered.
+</Warning>
+
+## Endpoints
+
+| Method | Route | Handler | Request class |
+|---|---|---|---|
+| `POST` | `/api/v1/contact` | `ContactController::contact()` | `ContactRequest` |
+| `POST` | `/api/v1/devis` | `ContactController::devis()` | `DevisRequest` |
+
+Both routes are public (no WordPress authentication required) and return JSON.
+
+## Validation rules
+
+<Tabs>
+  <Tab title="ContactRequest">
+    The contact form collects a short message alongside contact details and the type of project.
+
+    ```php
+    // app/Requests/Contact/ContactRequest.php
+    public static function rules(): array
+    {
+        return [
+            'name'    => 'required|string|min:2|max:100',
+            'email'   => 'required|email|max:255',
+            'phone'   => 'nullable|phone',
+            'project' => 'required|string|max:200',
+            'message' => 'required|string|min:10|max:2000',
+        ];
+    }
+    ```
+
+    A validation failure returns HTTP `422` with a structured error body:
+
+    ```json
+    {
+      "success": false,
+      "error": {
+        "code": "contact",
+        "message": "Validation error",
+        "details": { "name": ["The name field is required."] }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="DevisRequest">
+    The quote form collects full identity information, project specifications, and detailed needs.
+
+    ```php
+    // app/Requests/Contact/DevisRequest.php
+    public static function rules(): array
+    {
+        return [
+            'firstName'   => 'required|string|min:2|max:100',
+            'lastName'    => 'required|string|min:2|max:100',
+            'email'       => 'required|email|max:255',
+            'phone'       => 'required|phone',
+            'company'     => 'nullable|string|max:150',
+            'projectType' => 'required|string|max:200',
+            'budget'      => 'required|string|max:100',
+            'deadline'    => 'required|string|max:100',
+            'urgency'     => 'required|string|max:50',
+            'needs'       => 'required|string|min:10|max:2000',
+        ];
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## What `ContactService::store()` does
+
+When the contact endpoint receives a valid payload, `ContactService::store()` performs three operations in sequence:
+
+<Steps>
+  <Step title="Insert a `contact` post">
+    A new post of type `contact` is created with `post_status: 'en-attente'` and `post_title` set to the submitter's name.
+
+    ```php
+    $post_id = wp_insert_post([
+        'post_type'   => 'contact',
+        'post_title'  => sanitize_text_field($data['name'] ?? 'Message sans nom'),
+        'post_status' => 'en-attente',
+    ], true);
+    ```
+  </Step>
+  <Step title="Update ACF fields">
+    All form fields are written to ACF via `update_field()`:
+
+    ```php
+    update_field('name',        sanitize_text_field($data['name']),        $post_id);
+    update_field('company',     sanitize_text_field($data['company']),     $post_id);
+    update_field('email',       sanitize_text_field($data['email']),       $post_id);
+    update_field('phone',       sanitize_text_field($data['phone']),       $post_id);
+    update_field('budget',      sanitize_text_field($data['budget']),      $post_id);
+    update_field('projectType', sanitize_text_field($data['projectType']), $post_id);
+    update_field('description', sanitize_text_field($data['description']), $post_id);
+    update_field('delay',       sanitize_text_field($data['delay']),       $post_id);
+    update_field('hasDesign',   sanitize_text_field($data['hasDesign']),   $post_id);
+    // features array is joined with newlines
+    update_field('features',    $features,                                  $post_id);
+    ```
+  </Step>
+  <Step title="Send Telegram notification">
+    `sendTelegramNotification()` posts a formatted Markdown message to the configured chat.
+  </Step>
+</Steps>
+
+## Telegram notification format
+
+### Contact (`/api/v1/contact`)
+
+The message sent by `ContactController::contact()` via `TelegramNotificationService`:
+
+```
+🚀 *Nouvelle demande de contact*
+
+👤 *Nom:* John Doe
+📧 *Email:* john@example.com
+📞 *Téléphone:* +33 6 00 00 00 00
+
+📌 *Type:* Site web vitrine
+
+📝 *Message:*
+Bonjour, je souhaite un devis pour...
+```
+
+### Devis (`/api/v1/devis`)
+
+The message sent by `ContactController::devis()`:
+
+```
+📋 *Nouvelle demande de devis*
+
+👤 *Prénom:* John
+👤 *Nom:* Doe
+📧 *Email:* john@example.com
+📞 *Téléphone:* +33 6 00 00 00 00
+🏢 *Entreprise:* Acme Corp
+
+📌 *Type de projet:* Application web
+💰 *Budget:* 5 000 – 10 000 €
+⏳ *Délai:* 3 mois
+
+📝 *Besoin principal:*
+Développement d'une plateforme de réservation en ligne...
+```
+
+All messages are sent with `parse_mode: Markdown` via the Telegram Bot API endpoint `https://api.telegram.org/bot{TOKEN}/sendMessage`.
+
+## Custom post statuses
+
+Two custom post statuses are registered for the `contact` post type by `AppServiceProvider::handleContactStatus()`:
+
+<CardGroup cols={2}>
+  <Card title="en-attente" icon="clock">
+    **Pending** — the default status assigned when a new submission arrives. The admin list view defaults to showing this tab first.
+  </Card>
+  <Card title="traite" icon="circle-check">
+    **Handled** — set when an admin clicks **Marquer comme traité** in the row actions. Once set, the row action is no longer shown.
+  </Card>
+</CardGroup>
+
+The **Marquer comme traité** row action is a nonce-protected `admin-post.php` request that calls `wp_update_post()` to set `post_status: 'traite'` and then redirects back to the contact list.
+
+## Example cURL requests
+
+<CodeGroup>
+```bash POST /api/v1/contact
+curl -X POST https://example.com/api/v1/contact \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":    "John Doe",
+    "email":   "john@example.com",
+    "phone":   "+33600000000",
+    "project": "Site web vitrine",
+    "message": "Bonjour, je souhaite un devis pour mon projet."
+  }'
+```
+
+```bash POST /api/v1/devis
+curl -X POST https://example.com/api/v1/devis \
+  -H "Content-Type: application/json" \
+  -d '{
+    "firstName":   "John",
+    "lastName":    "Doe",
+    "email":       "john@example.com",
+    "phone":       "+33600000000",
+    "company":     "Acme Corp",
+    "projectType": "Application web",
+    "budget":      "5000-10000",
+    "deadline":    "3 mois",
+    "urgency":     "normal",
+    "needs":       "Développement d'\''une plateforme de réservation en ligne."
+  }'
+```
+</CodeGroup>
+
+A successful response from either endpoint:
+
+```json
+{
+  "success": true,
+  "data": {}
+}
+```

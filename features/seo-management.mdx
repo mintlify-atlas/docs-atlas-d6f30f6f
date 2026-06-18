@@ -1,0 +1,112 @@
+---
+title: "SEO Management — WP SSR Framework"
+sidebarTitle: "SEO"
+description: "Manage per-page meta tags, OpenGraph images, and SEO scores for every post type through ACF fields and a built-in SEO Dashboard."
+---
+
+The SEO Management feature in WP SSR gives every `page` post type — and any custom post type that opts in — a dedicated **Configuration SEO** ACF field group. Values are read by the web controller, passed to the `client.php` shell, and injected directly into the `<head>` meta tags of the rendered HTML. A per-post SEO score column and a global SEO Dashboard admin page give editors a clear picture of content health at a glance.
+
+## ACF field group
+
+The field group **Configuration SEO** is registered by `SEOServiceProvider::registerSEOFields()` and attached to all `page` post types automatically. It is also attached to any custom post type that declares `has_seo: true` (see [opting in](#opting-a-custom-post-type-into-seo)).
+
+| Field key | Label | ACF type | Notes |
+|---|---|---|---|
+| `seo_title` | Titre SEO | Text | Half-width column (50 %) |
+| `seo_description` | Description SEO | Textarea | 3 rows, half-width column (50 %) |
+| `seo_keywords` | Mots-clés | Text | Half-width column (50 %) |
+| `seo_og_image` | Image OpenGraph | Image | Medium preview, half-width column (50 %) |
+| `seo_author` | Auteur | Text | Half-width column (50 %) |
+
+## How SEO data reaches the browser
+
+<Steps>
+  <Step title="Controller reads ACF fields">
+    The web controller resolves the current post, reads each ACF field with `get_field()`, and assembles a `$seo` array that includes `page_title`, `description`, `keywords`, `author`, and `url`.
+  </Step>
+  <Step title="Data is passed to the shell">
+    The `$seo` array is injected into `$__wp_data__['seo']` and forwarded to `src/SSR/client.php`.
+  </Step>
+  <Step title="Meta tags are rendered in `<head>`">
+    `client.php` reads `$seo` and outputs the complete set of standard and OpenGraph meta tags:
+
+    ```php
+    <title><?= esc_html($seo['site_title'] ?? '') . ' | ' . esc_html($seo['page_title'] ?? '') ?></title>
+    <meta name="description"  content="<?= esc_html($seo['description'] ?? '') ?>">
+    <meta name="keywords"     content="<?= esc_html($seo['keywords']    ?? '') ?>">
+    <meta name="author"       content="<?= esc_html($seo['author']      ?? '') ?>">
+
+    <meta property="og:title"       content="<?= esc_html($seo['site_title'] ?? '') . ' | ' . esc_html($seo['page_title'] ?? '') ?>">
+    <meta property="og:description" content="<?= esc_html($seo['description'] ?? '') ?>">
+    <meta property="og:type"        content="website">
+    <meta property="og:locale"      content="fr_FR">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="canonical"     href="<?= esc_html($seo['url'] ?? '') ?>">
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  The `seo_og_image` field is tracked for completeness scoring but the image URL itself must be passed through your controller to appear in the rendered `og:image` meta tag. The shell does not automatically inject it from ACF.
+</Note>
+
+## Opting a custom post type into SEO
+
+Pass `has_seo: true` when registering your custom post type with `PostType::create()`:
+
+```php
+PostType::create('project', [
+    'label'   => 'Projects',
+    'has_seo' => true,
+    // ...other options
+]);
+```
+
+Once registered, the **Configuration SEO** field group is automatically appended to that post type's edit screen, the SEO score column appears in its list view, and its posts are included in the global SEO Dashboard.
+
+## Per-post SEO score column
+
+Every post-type list view that has SEO enabled gains an **SEO** column. It tracks six fields:
+
+- `seo_title`
+- `seo_description`
+- `seo_keywords`
+- `seo_canonical`
+- `seo_og_image`
+- `seo_author`
+
+The score is `(filled_fields / 6) × 100` and is rendered as a colour-coded progress bar:
+
+| Score range | Colour | Label |
+|---|---|---|
+| ≥ 80 % | 🟢 Green (`#16a34a`) | Bon |
+| ≥ 40 % | 🟡 Amber (`#f59e0b`) | Moyen |
+| < 40 % | 🔴 Red (`#dc2626`) | Faible |
+
+Any missing fields are listed beneath the bar with a ⚠ prefix so editors know exactly what to fill in without opening the post.
+
+## Global SEO Dashboard
+
+Navigate to **WordPress Admin → SEO** to open the dashboard. It aggregates SEO data across all published pages and opted-in post types.
+
+<CardGroup cols={2}>
+  <Card title="Global SEO score" icon="gauge">
+    A single progress bar showing the average SEO completeness across all published content, colour-coded using the same green / amber / red scale.
+  </Card>
+  <Card title="Score per content type" icon="table">
+    A table showing the average SEO score broken down by post type (e.g. `page`, `project`), making it easy to identify which content type needs the most attention.
+  </Card>
+  <Card title="Critical warnings" icon="triangle-exclamation">
+    Highlights the three most impactful gaps: pages missing an SEO description, pages missing an SEO title, and pages missing an OpenGraph image. Each line shows the exact count.
+  </Card>
+  <Card title="Missing field counts" icon="list">
+    A full table mapping every tracked field to the number of posts where it is blank — useful for bulk editorial planning.
+  </Card>
+</CardGroup>
+
+A **Pages to optimise** table lists every post scoring below 80 %, with a direct edit link, the numeric score, and the specific missing fields, so editors can work through the backlog efficiently.
+
+<Tip>
+  Start by filling in `seo_title`, `seo_description`, and `seo_og_image` — they account for the three critical warnings and have the biggest impact on social sharing and search ranking.
+</Tip>

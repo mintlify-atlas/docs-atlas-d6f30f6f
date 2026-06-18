@@ -1,0 +1,260 @@
+---
+title: "RequestValidator — API Request Validation"
+sidebarTitle: "RequestValidator"
+description: "ApiRequest and RequestValidator provide pipe-separated declarative validation for WP_REST_Request data, throwing ValidationException on failure."
+---
+
+WP SSR Framework includes a declarative validation layer for REST API controllers. You define an `ApiRequest` subclass that declares rules as a static method, then call `ApiRequest::validate($request)` in your controller to validate and extract only the fields you declared. On failure, a `ValidationException` is thrown automatically — your controller only needs to catch it and return an appropriate error response.
+
+---
+
+## `ApiRequest::rules(): array`
+
+An abstract static method that every concrete request class must implement. Returns an associative array mapping field names to pipe-separated rule strings.
+
+```php
+abstract public static function rules(): array;
+```
+
+**Return format:**
+
+```php
+return [
+    'field_name' => 'rule1|rule2|rule3:param',
+];
+```
+
+---
+
+## `ApiRequest::validate(): array`
+
+Validates a `WP_REST_Request` against the rules defined in `rules()` and returns only the fields that have rules declared.
+
+```php
+public static function validate(WP_REST_Request $request): array
+```
+
+<ParamField body="request" type="WP_REST_Request" required>
+  The WordPress REST request object passed to your controller method.
+</ParamField>
+
+**Returns:** An associative array containing only the validated fields (`array_intersect_key($data, $rules)`). Fields present in the request but absent from `rules()` are silently discarded.
+
+**Throws:** `ValidationException` — populated with a `[field => [messages]]` error map when any rule fails.
+
+```php
+public function contact(WP_REST_Request $request): WP_REST_Response
+{
+    try {
+        $data = ContactRequest::validate($request);
+        // $data is safe and contains only declared fields
+        $this->service(MailService::class)->send($data);
+        return new WP_REST_Response(['success' => true], 200);
+
+    } catch (ValidationException $e) {
+        return new WP_REST_Response([
+            'success' => false,
+            'errors'  => $e->getErrors(),
+        ], 422);
+    }
+}
+```
+
+---
+
+## Validation rules
+
+Rules are pipe-separated strings assigned per field: `'required|string|min:2|max:255'`.
+
+### Presence
+
+| Rule | Description |
+|------|-------------|
+| `required` | Field must be present and non-empty. If missing, all other rules for that field are skipped. |
+
+### Type rules
+
+| Rule | Description |
+|------|-------------|
+| `string` | Value must be a PHP string (`is_string()`). |
+| `numeric` | Value must be numeric (`is_numeric()`). |
+| `integer` | Value must be a valid integer (`FILTER_VALIDATE_INT`). |
+| `boolean` | Value must be one of: `true`, `false`, `0`, `1`, `'0'`, `'1'` (strict). |
+
+### Format rules
+
+| Rule | Description |
+|------|-------------|
+| `email` | Value must pass `FILTER_VALIDATE_EMAIL`. |
+| `url` | Value must pass `FILTER_VALIDATE_URL`. |
+| `ip` | Value must pass `FILTER_VALIDATE_IP`. |
+| `phone` | Value must match `/^[0-9+\s]{10,}$/` — at least 10 digits/spaces/plus signs. |
+| `date` | Value must be a valid `YYYY-MM-DD` date string. |
+| `regex:/pattern/` | Value must match the given PCRE regex (the full pattern including delimiters). |
+
+### Length / range rules
+
+| Rule | Description |
+|------|-------------|
+| `min:N` | String length must be at least `N` characters. |
+| `max:N` | String length must be at most `N` characters. |
+
+### Set membership rules
+
+| Rule | Description |
+|------|-------------|
+| `in:a,b,c` | Value must be one of the comma-separated allowed values. |
+| `not_in:a,b,c` | Value must not be one of the comma-separated excluded values. |
+
+### Confirmation rule
+
+| Rule | Description |
+|------|-------------|
+| `confirmed` | A second field named `{field}_confirmation` must exist and match the field's value. Useful for password confirmation. |
+
+<Note>
+  If a field is **not** marked `required` and the value is `null` or an empty string, all other rules for that field are skipped — the field is treated as intentionally absent.
+</Note>
+
+---
+
+## Example `ApiRequest` implementation
+
+```php app/Requests/ContactRequest.php
+<?php
+
+namespace Ahon\WPCMS\App\Requests;
+
+use Ahon\WPCMS\Requests\ApiRequest;
+
+class ContactRequest extends ApiRequest
+{
+    public static function rules(): array
+    {
+        return [
+            'name'    => 'required|string|min:2|max:100',
+            'email'   => 'required|email',
+            'phone'   => 'phone',
+            'subject' => 'required|string|min:5|max:255',
+            'message' => 'required|string|min:10|max:2000',
+        ];
+    }
+}
+```
+
+```php app/Requests/DevisRequest.php
+<?php
+
+namespace Ahon\WPCMS\App\Requests;
+
+use Ahon\WPCMS\Requests\ApiRequest;
+
+class DevisRequest extends ApiRequest
+{
+    public static function rules(): array
+    {
+        return [
+            'name'        => 'required|string|min:2|max:100',
+            'email'       => 'required|email',
+            'phone'       => 'required|phone',
+            'budget'      => 'required|in:500,1000,2500,5000,10000',
+            'project_type'=> 'required|string',
+            'description' => 'required|string|min:20|max:3000',
+            'deadline'    => 'date',
+        ];
+    }
+}
+```
+
+---
+
+## Using validators in a controller
+
+```php app/Controllers/Api/ContactController.php
+<?php
+
+namespace Ahon\WPCMS\App\Controllers\Api;
+
+use Ahon\WPCMS\App\Requests\ContactRequest;
+use Ahon\WPCMS\App\Requests\DevisRequest;
+use Ahon\WPCMS\Exceptions\ValidationException;
+use WP_REST_Request;
+use WP_REST_Response;
+
+class ContactController
+{
+    public function contact(WP_REST_Request $request): WP_REST_Response
+    {
+        try {
+            $data = ContactRequest::validate($request);
+            // $data = ['name' => '...', 'email' => '...', 'message' => '...']
+            // Fields not listed in rules() are excluded automatically.
+
+            // ... handle $data ...
+
+            return new WP_REST_Response(['success' => true], 200);
+
+        } catch (ValidationException $e) {
+            return new WP_REST_Response([
+                'success' => false,
+                'errors'  => $e->getErrors(),
+            ], 422);
+        }
+    }
+
+    public function devis(WP_REST_Request $request): WP_REST_Response
+    {
+        try {
+            $data = DevisRequest::validate($request);
+
+            // ... handle $data ...
+
+            return new WP_REST_Response(['success' => true], 200);
+
+        } catch (ValidationException $e) {
+            return new WP_REST_Response([
+                'success' => false,
+                'errors'  => $e->getErrors(),
+            ], 422);
+        }
+    }
+}
+```
+
+---
+
+## Error structure
+
+When `ValidationException` is thrown, it wraps an array of the form:
+
+```php
+[
+    'email'   => ['Le champ email doit être une adresse email valide.'],
+    'name'    => ['Le champ name doit contenir au moins 2 caractères.'],
+]
+```
+
+<Note>
+  Error messages are currently in French, matching the framework's origin locale. If you need multilingual messages, extend `RequestValidator` and override the `validate()` method with your own message map.
+</Note>
+
+---
+
+## Validation flow summary
+
+```
+ApiRequest::validate($request)
+  │
+  ├─ $data = $request->get_params()
+  ├─ $rules = static::rules()
+  │
+  ├─ RequestValidator::validate($data, $rules)
+  │     └─ foreach $field => $ruleString
+  │           ├─ is 'required' in rules? → check presence
+  │           ├─ field absent + not required? → skip
+  │           └─ foreach rule in pipe-split list
+  │                 └─ run check → push to $errors[$field] on fail
+  │
+  ├─ errors empty? → return array_intersect_key($data, $rules)
+  └─ errors present? → throw ValidationException($errors)
+```

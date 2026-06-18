@@ -1,0 +1,87 @@
+---
+title: "Plausible Analytics Integration — WP SSR Framework"
+sidebarTitle: "Analytics"
+description: "Embed a Plausible Analytics shared dashboard directly inside WordPress admin with zero API keys — just a shared link and your domain."
+---
+
+The Analytics feature integrates [Plausible Analytics](https://plausible.io) into the WordPress admin by embedding a shared-dashboard iframe. Instead of requiring API keys or server-side data processing, it uses Plausible's public shared-link mechanism: you paste the link into a settings form, and the dashboard appears inside WordPress as a full-width, transparent embed. Two admin sub-pages handle viewing statistics and configuring the integration.
+
+<Note>
+  The Analytics section only requires a **Plausible shared link** — no API key, no tracking script installation, and no server-side data access is needed. The iframe is served entirely from Plausible's infrastructure.
+</Note>
+
+## Admin menu structure
+
+`AnalyticsServiceProvider` registers the following WordPress admin pages under **Analytics**:
+
+| Menu item | Slug | Description |
+|---|---|---|
+| **Statistiques** | `analytics` | Shows the embedded Plausible iframe |
+| **Configuration** | `analytics-config` | Settings form to save the shared link and domain |
+
+## Configuration
+
+<Steps>
+  <Step title="Open the configuration page">
+    Go to **WordPress Admin → Analytics → Configuration**.
+  </Step>
+  <Step title="Enter your Plausible shared link">
+    In the **Plausible Shared Link** field, paste the public shared-dashboard URL from your Plausible account (e.g. `https://plausible.io/share/your-site.com?auth=xxxx`). This is saved as the WordPress option `plausible_shared_link`.
+  </Step>
+  <Step title="Enter your Plausible domain">
+    In the **Plausible Domain** field, enter the hostname of your Plausible instance — `plausible.io` for the hosted service, or your self-hosted subdomain. This is saved as the WordPress option `plausible_domain` and is used to load `embed.host.js`.
+  </Step>
+  <Step title="Save">
+    Click **Save Changes**. WordPress stores both values and the Statistics page will now display the live dashboard.
+  </Step>
+</Steps>
+
+## WordPress options
+
+Both values are stored as standard WordPress options registered under the `analytics_options_group` settings group:
+
+| Option name | Type | Example value |
+|---|---|---|
+| `plausible_shared_link` | URL | `https://plausible.io/share/ahon.dev?auth=abc123` |
+| `plausible_domain` | Text | `plausible.io` |
+
+## How the iframe is built
+
+When the Statistics page renders, `AnalyticsServiceProvider::statsPage()` retrieves both options and constructs the iframe `src` by appending three query parameters to the shared link:
+
+```php
+$iframe_src = add_query_arg(
+    [
+        'embed'      => 'true',
+        'theme'      => 'light',
+        'background' => 'transparent',
+    ],
+    $shared_link
+);
+```
+
+The resulting URL looks like:
+
+```
+https://plausible.io/share/ahon.dev?auth=abc123&embed=true&theme=light&background=transparent
+```
+
+The iframe is rendered at full container width with a fixed height of `1600px`, and Plausible's `embed.host.js` script is loaded from your configured domain to handle resize messaging:
+
+```html
+<iframe
+    plausible-embed
+    src="https://plausible.io/share/ahon.dev?auth=abc123&embed=true&theme=light&background=transparent"
+    scrolling="no"
+    frameborder="0"
+    loading="lazy"
+    style="width: 1px; min-width: 100%; height: 1600px;"
+></iframe>
+<script async src="https://plausible.io/js/embed.host.js"></script>
+```
+
+If either `plausible_shared_link` or `plausible_domain` is empty, the Statistics page shows a notice with a link to the Configuration page instead of the iframe.
+
+<Tip>
+  To create a shared link in Plausible, go to your site settings → **Visibility** → **Shared links** → **+ new link**. You can optionally password-protect it, though a public link is sufficient for embedding inside the protected WordPress admin.
+</Tip>

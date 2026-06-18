@@ -1,0 +1,211 @@
+---
+title: "Environment Variables — WP SSR Framework"
+sidebarTitle: "Environment Vars"
+description: "Complete reference for every .env variable used by the WP SSR Framework: database, WordPress URLs, Telegram, SSG tokens, and security salts."
+---
+
+The WP SSR Framework uses a [Bedrock](https://roots.io/bedrock/)-style `.env` file at the repository root to manage all runtime configuration. This page documents every supported variable — what it does, when it is required, and how it flows through `config/application.php` into WordPress constants. Variables are loaded by `vlucas/phpdotenv` with the `CONVERT_*` and `STRIP_QUOTES` flags, so boolean-like strings are automatically cast and surrounding quotes are stripped.
+
+<Warning>
+  Never commit a populated `.env` file to version control. The repository ships a `.env.example` with every key present but with empty values. Copy it to `.env` and fill in your own secrets before first use.
+</Warning>
+
+---
+
+## Database
+
+<ParamField path="DB_NAME" type="string" required>
+  The MySQL database name WordPress will connect to. Required unless you supply a full `DATABASE_URL` DSN instead.
+</ParamField>
+
+<ParamField path="DB_USER" type="string" required>
+  The MySQL username. Required unless `DATABASE_URL` is provided.
+</ParamField>
+
+<ParamField path="DB_PASSWORD" type="string" required>
+  The MySQL password for `DB_USER`. Required unless `DATABASE_URL` is provided.
+</ParamField>
+
+<ParamField path="DB_HOST" type="string">
+  The MySQL host (and optional port, e.g. `127.0.0.1:3306`). Falls back to `localhost` when omitted.
+
+  **Default:** `localhost`
+</ParamField>
+
+<ParamField path="DB_PREFIX" type="string">
+  The WordPress database table prefix. Change this from the default to add a small layer of obscurity against automated SQL injection probes.
+
+  **Default:** `wp_`
+</ParamField>
+
+<Accordion title="Alternative: DATABASE_URL DSN">
+  Instead of individual `DB_*` variables you may supply a single DSN:
+
+  ```bash
+  DATABASE_URL='mysql://database_user:database_password@database_host:3306/database_name'
+  ```
+
+  When `DATABASE_URL` is present, `config/application.php` parses it with `parse_url()` and overwrites any individual `DB_*` values, so you can omit `DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `DB_HOST`.
+</Accordion>
+
+---
+
+## WordPress Core
+
+<ParamField path="WP_ENV" type="string" required>
+  The active environment name. Accepted values are `development`, `staging`, and `production`.
+
+  This constant drives several framework behaviours:
+  - **`development`** — enables `WP_DEBUG`, `WP_DEBUG_DISPLAY`, `WP_DEBUG_LOG`, `SCRIPT_DEBUG`, `SAVEQUERIES`, and `DISALLOW_INDEXING`. Also activates Vite dev-server detection so the React SPA is served from the HMR server.
+  - **`staging`** / **`production`** — inherits the hardened production defaults: no debug output, `DISALLOW_FILE_EDIT`, and `DISALLOW_FILE_MODS` set to `true`.
+
+  WordPress's own `WP_ENVIRONMENT_TYPE` constant is inferred automatically from this value.
+</ParamField>
+
+<ParamField path="WP_HOME" type="string" required>
+  The full public URL of the site root, **without** a trailing slash (e.g. `https://example.com`). This becomes the WordPress `WP_HOME` constant and is used everywhere the framework generates absolute URLs.
+</ParamField>
+
+<ParamField path="WP_SITEURL" type="string">
+  The URL of the WordPress core installation. Because Bedrock installs WordPress in the `/wp` subdirectory, this should always be `${WP_HOME}/wp`.
+
+  **Auto-set** in `.env.example` via variable interpolation — you should not need to change this manually.
+</ParamField>
+
+<Note>
+  `WP_HOME` and `WP_SITEURL` are both enforced as **required** by `phpdotenv` in `config/application.php`. The application will throw a `ValidationException` and refuse to boot if either is missing.
+</Note>
+
+---
+
+## Notifications (Telegram)
+
+<ParamField path="TELEGRAM_BOT_TOKEN" type="string">
+  The HTTP API token for the Telegram bot that delivers contact-form notifications. Obtain one from [@BotFather](https://t.me/BotFather). Leave empty to disable Telegram notifications without affecting other functionality.
+</ParamField>
+
+<ParamField path="TELEGRAM_CHAT_ID" type="string">
+  The numeric chat or channel ID where the bot will send messages. Required alongside `TELEGRAM_BOT_TOKEN` for notifications to be delivered.
+</ParamField>
+
+---
+
+## SSG & API Tokens
+
+<ParamField path="WEB_RENDER_TOKEN" type="string" required>
+  Bearer token for the `https://api.ahon.dev/web/render` endpoint used during static-site generation. The SSG pipeline calls this endpoint to pre-render React routes server-side; without a valid token the build step will fail.
+
+  Required when running the static generation pipeline (`WP_ENV=production`).
+</ParamField>
+
+<ParamField path="HEALTH_ENDPOINT_TOKEN" type="string">
+  A secret token that guards the `/health` REST API endpoint. When set, requests to `/health` must include this value as a Bearer token; unauthenticated probes receive a `401` response. Leave empty to expose `/health` without authentication (suitable for internal networks with a WAF in front).
+
+  A good source of random tokens: [https://it-tools.tech/token-generator](https://it-tools.tech/token-generator)
+</ParamField>
+
+---
+
+## WordPress Security Salts
+
+WordPress uses eight distinct keys and salts to sign cookies, nonces, and session tokens. Each must be a long, random, unique string. They are all **required** — WordPress will not function securely without them.
+
+<Tip>
+  Generate all eight values at once using the official Roots salt generator: [https://roots.io/salts.html](https://roots.io/salts.html). Paste the output directly into your `.env` file.
+</Tip>
+
+<ParamField path="AUTH_KEY" type="string" required>
+  Signs the authentication cookie for logged-in users.
+</ParamField>
+
+<ParamField path="SECURE_AUTH_KEY" type="string" required>
+  Signs the secure (HTTPS-only) authentication cookie.
+</ParamField>
+
+<ParamField path="LOGGED_IN_KEY" type="string" required>
+  Signs the logged-in cookie that identifies authenticated sessions.
+</ParamField>
+
+<ParamField path="NONCE_KEY" type="string" required>
+  Used when generating nonces for forms and AJAX requests.
+</ParamField>
+
+<ParamField path="AUTH_SALT" type="string" required>
+  Additional entropy mixed into the authentication cookie hash.
+</ParamField>
+
+<ParamField path="SECURE_AUTH_SALT" type="string" required>
+  Additional entropy for the secure authentication cookie.
+</ParamField>
+
+<ParamField path="LOGGED_IN_SALT" type="string" required>
+  Additional entropy for the logged-in cookie.
+</ParamField>
+
+<ParamField path="NONCE_SALT" type="string" required>
+  Additional entropy for nonce generation.
+</ParamField>
+
+---
+
+## Complete `.env.example`
+
+The file shipped in the repository root serves as the canonical template. Copy it to `.env` and populate every required value before starting the application.
+
+```bash .env.example
+DB_NAME=''
+DB_USER=''
+DB_PASSWORD=''
+
+# Optionally, you can use a data source name (DSN)
+# When using a DSN, you can remove the DB_NAME, DB_USER, DB_PASSWORD, and DB_HOST variables
+# DATABASE_URL='mysql://database_user:database_password@database_host:database_port/database_name'
+
+# Optional database variables
+# DB_HOST='localhost'
+# DB_PREFIX='wp_'
+
+WP_ENV='development'
+WP_HOME=''
+WP_SITEURL="${WP_HOME}/wp"
+
+# Telegram BOT
+TELEGRAM_BOT_TOKEN=''
+TELEGRAM_CHAT_ID=''
+
+# api.ahon.dev
+WEB_RENDER_TOKEN=''
+
+# https://it-tools.tech/token-generator
+HEALTH_ENDPOINT_TOKEN=''
+
+# Specify optional debug.log path
+# WP_DEBUG_LOG='/path/to/debug.log'
+
+# Generate your keys here: https://roots.io/salts.html
+AUTH_KEY=''
+SECURE_AUTH_KEY=''
+LOGGED_IN_KEY=''
+NONCE_KEY=''
+AUTH_SALT=''
+SECURE_AUTH_SALT=''
+LOGGED_IN_SALT=''
+NONCE_SALT=''
+```
+
+---
+
+## Environment-specific behaviour
+
+The table below summarises how `WP_ENV` changes runtime behaviour across all three tiers.
+
+| Constant | `development` | `staging` / `production` |
+|---|---|---|
+| `WP_DEBUG` | `true` | `false` |
+| `WP_DEBUG_DISPLAY` | `true` | `false` |
+| `WP_DEBUG_LOG` | `true` (or custom path) | `false` |
+| `SCRIPT_DEBUG` | `true` | `false` |
+| `SAVEQUERIES` | `true` | `false` |
+| `DISALLOW_INDEXING` | `true` | `false` |
+| `DISALLOW_FILE_MODS` | `false` | `true` |
+| Vite dev server | detected | bypassed |

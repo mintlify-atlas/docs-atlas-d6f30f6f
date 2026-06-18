@@ -1,0 +1,306 @@
+---
+title: "QueryBuilder — Eloquent-style CPT Queries"
+sidebarTitle: "QueryBuilder"
+description: "QueryBuilder wraps WP_Query with a fluent chainable API for filtering, ordering, paginating, and eager-loading taxonomy terms on Custom Post Types."
+---
+
+`QueryBuilder` provides a Laravel Eloquent–inspired interface for querying WordPress Custom Post Types. It is accessed through `EloquentCPT::query()` on any model class and compiles a `WP_Query` call when `get()` or `all()` is invoked. Results are returned as Illuminate `Collection` instances containing hydrated `EloquentCPT` model objects with all ACF fields mapped as public properties.
+
+---
+
+## Entry point
+
+```php
+EloquentCPT::query(): QueryBuilder
+```
+
+Called as a static method on any `EloquentCPT` subclass. The builder captures the calling class's short name and its `static::$model` post type slug automatically.
+
+```php
+use Ahon\WPCMS\App\PostTypes\Article;
+
+$articles = Article::query()->all();
+```
+
+---
+
+## Terminal methods
+
+These methods execute the query and return a `Collection`.
+
+### `all(): Collection`
+
+Returns every post of this type, with no limit.
+
+```php
+$all = Article::query()->all();
+// Equivalent to: Article::query()->limit(-1)->get()
+```
+
+### `get(): Collection`
+
+Executes the query with all accumulated constraints and returns a `Collection` of model objects. If the query returns zero results, an empty `Collection` is returned.
+
+```php
+$posts = Article::query()
+    ->limit(5)
+    ->orderBy('date', 'DESC')
+    ->get();
+```
+
+---
+
+## Pagination methods
+
+### `limit(int $limit): QueryBuilder`
+
+<ParamField body="limit" type="integer" required>
+  Maximum number of posts to retrieve. Pass `-1` to retrieve all. Defaults to `-1`.
+</ParamField>
+
+### `offset(int $offset): QueryBuilder`
+
+<ParamField body="offset" type="integer" required>
+  Number of posts to skip. Used together with `limit()` for pagination.
+</ParamField>
+
+```php
+// Page 2 of 10 posts per page
+$page2 = Article::query()
+    ->limit(10)
+    ->offset(10)
+    ->get();
+```
+
+---
+
+## Ordering methods
+
+### `orderBy(string $value, string $order): QueryBuilder`
+
+<ParamField body="value" type="string" required>
+  The `orderby` value passed to `WP_Query` (e.g. `'date'`, `'title'`, `'meta_value'`, `'menu_order'`).
+</ParamField>
+
+<ParamField body="order" type="string" required>
+  Must be `'ASC'` or `'DESC'`. Anything else triggers `wp_die()`.
+</ParamField>
+
+```php
+Article::query()->orderBy('date', 'DESC')->get();
+```
+
+### `random(int $limit): QueryBuilder`
+
+<ParamField body="limit" type="integer" required>
+  Number of randomly ordered posts to return. Sets `orderby` to `'rand'` internally.
+</ParamField>
+
+```php
+$featured = Article::query()->random(3)->get();
+```
+
+---
+
+## Meta query methods
+
+All three methods append entries to the internal `meta_query` array.
+
+### `where(string $key, string $operator, $value = null): QueryBuilder`
+
+Adds an ACF meta condition. Sets the relation to `AND` (unless `orWhere` is called later).
+
+<ParamField body="key" type="string" required>
+  The ACF field key / meta key (e.g. `'status'`).
+</ParamField>
+
+<ParamField body="operator" type="string" required>
+  WP_Query comparison operator: `'='`, `'!='`, `'>'`, `'>='`, `'<'`, `'<='`, `'LIKE'`, `'NOT LIKE'`, `'IN'`, `'NOT IN'`, etc. If only two arguments are passed, the operator defaults to `'='` and this argument is treated as the value.
+</ParamField>
+
+<ParamField body="value" type="mixed">
+  The value to compare against. When omitted, `$operator` is used as the value with `=` as the operator.
+</ParamField>
+
+### `orWhere(string $key, string $operator, $value = null): QueryBuilder`
+
+Identical to `where()` but sets the `meta_query` relation to `OR`.
+
+### `andWhere(string $key, string $operator, $value = null): QueryBuilder`
+
+Identical to `where()` but explicitly sets the `meta_query` relation to `AND`. Useful when mixing with previous `orWhere()` calls.
+
+```php
+// Shorthand (two-arg): key + value, operator defaults to '='
+Article::query()->where('status', 'published')->get();
+
+// Full three-arg form
+Article::query()->where('views', '>=', 100)->get();
+
+// Mixed AND / OR
+Article::query()
+    ->where('category', 'tech')
+    ->orWhere('category', 'design')
+    ->get();
+```
+
+---
+
+## Taxonomy query
+
+### `taxonomy(string $taxonomy, string|array $term): QueryBuilder`
+
+<ParamField body="taxonomy" type="string" required>
+  A registered taxonomy slug (e.g. `'category'`). Calls `wp_die()` if the taxonomy does not exist.
+</ParamField>
+
+<ParamField body="term" type="string | array" required>
+  A term slug, an array of term slugs, or `'*'` to match all terms (no-op — the clause is skipped). Multiple `taxonomy()` calls are combined with `AND`.
+</ParamField>
+
+```php
+// Single term
+Article::query()->taxonomy('category', 'javascript')->get();
+
+// Multiple terms (IN operator)
+Article::query()->taxonomy('category', ['javascript', 'php'])->get();
+
+// Wildcard – no filter applied
+Article::query()->taxonomy('category', '*')->get();
+```
+
+---
+
+## Eager loading
+
+### `with(string $relationType, string ...$relations): QueryBuilder`
+
+Eager-loads related data onto the result set after the initial query, avoiding N+1 issues.
+
+<ParamField body="relationType" type="string" required>
+  Currently only `'taxonomy'` is supported. Any other value triggers `wp_die()`.
+</ParamField>
+
+<ParamField body="relations" type="string (variadic)" required>
+  One or more taxonomy slugs to load. Each must be a registered taxonomy or `wp_die()` is called.
+</ParamField>
+
+```php
+$articles = Article::query()
+    ->with('taxonomy', 'category')
+    ->get();
+
+// Each article now has a $category property:
+foreach ($articles as $article) {
+    foreach ($article->category as $term) {
+        echo $term->name;
+    }
+}
+```
+
+<Note>
+  Taxonomy eager loading executes a single SQL query per taxonomy using a direct `$wpdb` join across `term_relationships`, `term_taxonomy`, and `terms` — not `get_the_terms()` per post.
+</Note>
+
+---
+
+## Search and ID/slug matching
+
+### `search(string $query): QueryBuilder`
+
+<ParamField body="query" type="string" required>
+  A search string passed through `sanitize_text_field()` and mapped to the `'s'` WP_Query argument.
+</ParamField>
+
+### `matchIds(array $ids): QueryBuilder`
+
+<ParamField body="ids" type="array" required>
+  An array of post IDs (cast to `int`). Automatically sets `orderby` to `'post__in'` to preserve ID order.
+</ParamField>
+
+### `matchSlugs(array $slugs): QueryBuilder`
+
+<ParamField body="slugs" type="array" required>
+  An array of post slugs (sanitized with `sanitize_title()`). Automatically sets `orderby` to `'post_name__in'` to preserve slug order.
+</ParamField>
+
+```php
+Article::query()->matchIds([12, 7, 99])->get();
+
+Article::query()->matchSlugs(['getting-started', 'advanced-tips'])->get();
+
+Article::query()->search('headless wordpress')->limit(5)->get();
+```
+
+---
+
+## `EloquentCPT::queryTerms()`
+
+A static helper on the model (not on `QueryBuilder`) that fetches taxonomy terms and strips the uncategorized default term.
+
+```php
+EloquentCPT::queryTerms(string $taxonomy, bool $hideEmpty = false): Collection|array|WP_Error
+```
+
+<ParamField body="taxonomy" type="string" required>
+  The taxonomy slug to query.
+</ParamField>
+
+<ParamField body="hideEmpty" type="boolean" default="false">
+  When `true`, terms with zero posts are excluded.
+</ParamField>
+
+Terms with the slug `'non-classe'` or the name `'Non classé'` (WordPress's default uncategorized term) are always filtered out. Each returned item is a plain array:
+
+```php
+[
+    'id'   => 5,
+    'name' => 'JavaScript',
+    'slug' => 'javascript',
+]
+```
+
+```php
+$categories = Article::queryTerms('category');
+// Returns a Collection of ['id', 'name', 'slug'] arrays
+```
+
+---
+
+## Typical query patterns
+
+```php
+// Latest 6 articles, ordered newest first
+$latest = Article::query()
+    ->limit(6)
+    ->orderBy('date', 'DESC')
+    ->get();
+
+// All services with their taxonomies eager-loaded
+$services = Service::query()
+    ->with('taxonomy', 'service-category')
+    ->all();
+
+// Paginated archive (page 3, 9 per page)
+$page = Realisation::query()
+    ->limit(9)
+    ->offset(18)
+    ->orderBy('date', 'DESC')
+    ->get();
+
+// Filter by meta field + taxonomy
+$filtered = Article::query()
+    ->where('featured', '1')
+    ->taxonomy('category', 'php')
+    ->orderBy('date', 'DESC')
+    ->get();
+
+// Random spotlight
+$spotlight = Service::query()->random(3)->get();
+
+// Search across post titles
+$results = Article::query()
+    ->search($request->get_param('q'))
+    ->limit(10)
+    ->get();
+```

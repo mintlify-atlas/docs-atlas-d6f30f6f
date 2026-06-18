@@ -1,0 +1,220 @@
+---
+title: "Web Routing — PHP Controllers & SPA Shell"
+sidebarTitle: "Web Routing"
+description: "How WP SSR's WebRouter intercepts frontend requests on wp_loaded, dispatches controllers, and serves static HTML snapshots to bots and crawlers."
+---
+
+The **WebRouter** is the front-controller layer of WP SSR. It hooks into `wp_loaded` at priority `5` — before WordPress's own template loader — and intercepts every frontend request. Matched routes are dispatched directly to PHP controllers that return the React SPA shell; WordPress's own theme rendering never runs for any registered route.
+
+---
+
+## How the Router Intercepts Requests
+
+```php title="src/Kernel.php (excerpt)"
+add_action('wp_loaded', function () {
+    WebRouter::init()->handleRequest();
+}, 5);
+```
+
+`WebRouter::init()` creates a fresh router instance and immediately requires `configuration/routes/web.php`, which populates the route maps. `handleRequest()` then:
+
+1. Reads `$_SERVER['REQUEST_URI']` and strips any trailing slash.
+2. Skips built-in WordPress paths: `/wp/`, `/api/`, `/uploads/`, `/admin`, `/client`.
+3. Runs bot detection. If the visitor is a crawler **and** a static snapshot exists, serves it and exits.
+4. Looks up the URI in the static route map, dispatches the controller, echoes the result, and exits.
+5. If no static route matches, tries each CPT route prefix to handle archive and single views.
+
+---
+
+## Route Types
+
+<Tabs>
+  <Tab title="Static Routes">
+    Static routes map a fixed URL path to a controller method. Use `Route::get()` for any page that doesn't correspond to a WordPress post type.
+
+    ```php title="Signature"
+    WebRoute::get(string $path, string $name, array $controller): WebRouteDefinition
+    // $controller = [ControllerClass::class, 'methodName']
+    ```
+
+    ```php title="configuration/routes/web.php"
+    use Ahon\WPCMS\App\Controllers\Web\HomeController;
+    use Ahon\WPCMS\Routing\Web\WebRoute as Route;
+
+    Route::get('/',        'Accueil', [HomeController::class, 'home']);
+    Route::get('/agence',  'Agence',  [HomeController::class, 'agence']);
+    Route::get('/devis',   'Devis',   [HomeController::class, 'devis']);
+    Route::get('/contact', 'Contact', [HomeController::class, 'contact']);
+    ```
+
+    The second argument (`$name`) is used as the WordPress page title when `registerPage()` auto-creates the page in development mode (see below).
+  </Tab>
+  <Tab title="CPT Routes">
+    CPT routes handle both the **archive** (list page) and each **single** post for a custom post type. A single call to `Route::CPT()` registers both patterns under one base path.
+
+    ```php title="Signature"
+    WebRoute::CPT(string $path, string $postType, string $controller): void
+    // $postType  — fully-qualified PostType model class (e.g. Service::class)
+    // $controller — fully-qualified controller class implementing CPTControllerInterface
+    ```
+
+    ```php title="configuration/routes/web.php"
+    use Ahon\WPCMS\App\Controllers\Web\ServiceController;
+    use Ahon\WPCMS\App\Controllers\Web\RealisationController;
+    use Ahon\WPCMS\App\Controllers\Web\BlogController;
+    use Ahon\WPCMS\App\PostTypes\Service;
+    use Ahon\WPCMS\App\PostTypes\Realisation;
+    use Ahon\WPCMS\App\PostTypes\Article;
+    use Ahon\WPCMS\Routing\Web\WebRoute as Route;
+
+    Route::CPT('/services',      Service::class,     ServiceController::class);
+    Route::CPT('/realisations',  Realisation::class, RealisationController::class);
+    Route::CPT('/blog',          Article::class,     BlogController::class);
+    ```
+
+    | Incoming URI | Resolved to |
+    |---|---|
+    | `/blog` | `BlogController::archive()` |
+    | `/blog/my-post-slug` | `BlogController::single($article)` |
+    | `/services` | `ServiceController::archive()` |
+    | `/services/seo-strategy` | `ServiceController::single($service)` |
+  </Tab>
+</Tabs>
+
+---
+
+## Writing Controllers
+
+### Static page controller
+
+Controllers for static routes must extend `WebController` (which itself extends `AppController`). Each routed method must return a `string` — the full HTML response.
+
+```php title="app/Controllers/Web/HomeController.php"
+namespace Ahon\WPCMS\App\Controllers\Web;
+
+use Ahon\WPCMS\App\PostTypes\Service;
+use Ahon\WPCMS\Controllers\WebController;
+
+class HomeController extends WebController
+{
+    public function home(): string
+    {
+        // Cache the query result for 5 minutes (300 seconds)
+        $services = $this->remember('composer_services_v1', 300, function () {
+            return Service::query()->all();
+        });
+
+        return $this->view('home', [
+            'services' => $services,
+        ]);
+    }
+
+    public function devis(): string
+    {
+        return $this->view('devis');
+    }
+
+    public function agence(): string
+    {
+        return $this->view('agence');
+    }
+
+    public function contact(): string
+    {
+        return $this->view('contact');
+    }
+}
+```
+
+### CPT controller
+
+CPT controllers must implement `CPTControllerInterface`, which requires both an `archive()` and a `single()` method. The `single()` method receives a hydrated `EloquentCPT` model (or `null` if the slug was not found).
+
+```php title="app/Controllers/Web/ServiceController.php"
+namespace Ahon\WPCMS\App\Controllers\Web;
+
+use Ahon\WPCMS\App\PostTypes\Service;
+use Ahon\WPCMS\Controllers\CPTControllerInterface;
+use Ahon\WPCMS\Controllers\WebController;
+use Ahon\WPCMS\Eloquent\EloquentCPT;
+
+class ServiceController extends WebController implements CPTControllerInterface
+{
+    public function archive(): string|bool
+    {
+        $services = Service::query()->all();
+
+        return $this->view('services', [
+            'services' => $services,
+        ]);
+    }
+
+    public function single(?EloquentCPT $post): string|bool
+    {
+        $services = Service::query()->all();
+
+        return $this->postView('services_single', $post, [
+            'services' => $services,
+        ]);
+    }
+}
+```
+
+<Note>
+  `$this->view(string $name, array $data)` injects `$data` into the SPA shell and returns the full HTML string. `$this->postView()` works identically but also makes the individual `$post` object available to the view.
+</Note>
+
+---
+
+## Bot Detection & Static Cache
+
+When `BotDetector::isBot()` returns `true`, the router attempts to serve a pre-built HTML file before any controller runs:
+
+```
+cache/client/static/{slug}.html
+```
+
+The slug is derived from the last path segment of the URI (the homepage maps to `home`). If the file exists and is readable, the router sends it with these headers and exits:
+
+```
+Content-Type: text/html; charset=UTF-8
+X-SSG-Cache: HIT
+Last-Modified: <file mtime>
+```
+
+If the file is already cached by the bot's HTTP client, a `304 Not Modified` response is returned. You can bypass the static cache for debugging by appending `?json=1` to any URL.
+
+<Tip>
+  To force a cache miss during local development, append `?json=1` to any URL. The router skips the static file check when that query parameter is present.
+</Tip>
+
+---
+
+## Development: `registerPage()`
+
+When the environment variable `WP_ENV` is set to `development`, the router automatically creates a WordPress `page` post for every registered static route:
+
+```php title="src/Routing/Web/WebRouter.php (registerPage)"
+public function registerPage(WebRouteDefinition $route): void
+{
+    $slug = $this->pathToSlug($route->path);   // '/' → 'home', '/contact' → 'contact'
+
+    if (get_page_by_path($slug, OBJECT)) {
+        return; // idempotent — never creates duplicates
+    }
+
+    wp_insert_post([
+        'post_title'   => $route->name,
+        'post_name'    => $slug,
+        'post_status'  => 'publish',
+        'post_type'    => 'page',
+        'post_content' => '',
+    ]);
+}
+```
+
+This ensures the WordPress admin's **Pages** list accurately reflects your frontend routes, and ACF field groups scoped to `page` appear on the correct admin screen. In production (`WP_ENV !== 'development'`) this behaviour is silently skipped.
+
+<Warning>
+  Pages created by `registerPage()` are plain WordPress pages with no content. They exist solely so the WordPress admin can target them with ACF field groups or SEO plugins. Do not edit them directly — their content is controlled by your controllers.
+</Warning>

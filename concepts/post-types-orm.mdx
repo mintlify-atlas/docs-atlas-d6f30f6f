@@ -1,0 +1,331 @@
+---
+title: "Post Types & Eloquent ORM — WP SSR Framework"
+sidebarTitle: "Post Types & ORM"
+description: "Register WordPress custom post types with a fluent PHP API and query them via EloquentCPT — WP SSR's ActiveRecord-style ORM that auto-maps ACF fields."
+---
+
+WP SSR ships a fluent custom-post-type builder and an Eloquent-inspired ORM that turns every `WP_Post` into a typed PHP object with ACF fields auto-mapped as public properties. Instead of writing `get_posts()` arrays and calling `get_field()` by hand, you define your data model once and query it with a chainable `QueryBuilder`.
+
+---
+
+## Defining Post Types
+
+Post types are configured in `configuration/posts/` and loaded on the WordPress `init` hook by `PostType::init()`. Use the `PostType::create()` static factory, then chain `.taxonomy()`, `.fields()`, and finally `.make()` to register everything with WordPress and ACF.
+
+```php title="Signature"
+PostType::create(
+    string $slug,         // WordPress post type key
+    string $title,        // Singular label
+    string $title_plural, // Plural label (shown in admin menu)
+    string $url_rewrite,  // URL slug (e.g. 'blog')
+    string $icon,         // Dashicons icon name (without 'dashicons-')
+    bool   $has_seo,      // Whether SEO fields should be attached
+    string $class_name    // Eloquent model class name (optional, defaults to $slug)
+): PostType
+```
+
+### Fluent builder methods
+
+| Method | Description |
+|---|---|
+| `.taxonomy(slug, title, title_plural, url_rewrite, show_in_rest, ?fields)` | Registers a taxonomy for this post type. Pass an optional `$fields` array to attach ACF fields to taxonomy terms. |
+| `.fields(array $fields)` | Appends ACF field definitions (using `extended-acf`) to the post type's field group. |
+| `.make()` | Finalises registration — calls `register_extended_field_group()` to create the ACF field group. **Must be called last.** |
+
+---
+
+## Real Post Type Definitions
+
+<Accordion title="Article (blog posts)">
+
+```php title="configuration/posts/article.php"
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\Text;
+use Extended\ACF\Fields\WYSIWYGEditor;
+
+PostType::create('article', 'Article', 'Articles', 'blog', 'welcome-write-blog', true)
+    ->taxonomy('category', 'Category', 'Categories', 'blog', true)
+    ->fields([
+        WYSIWYGEditor::make('Contenu', 'content'),
+        Text::make('Temps de lecture', 'readTime'),
+        Text::make('Extrait', 'excerpt'),
+    ])
+    ->make();
+```
+
+This creates an `article` post type at `/blog/*`, with a `category` taxonomy and three ACF fields: a rich-text `content` field, a `readTime` string, and a plain-text `excerpt`.
+
+</Accordion>
+
+<Accordion title="Service">
+
+```php title="configuration/posts/service.php"
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\{Repeater, Select, Text, Textarea, WYSIWYGEditor};
+
+PostType::create('service', 'Service', 'Services', 'services', 'hammer', true)
+    ->fields([
+        Text::make('Description', 'desc')->required(),
+        Text::make('Label court', 'shortLabel')->required(),
+        Text::make('Tag', 'tag')->required(),
+
+        // Hero section
+        Text::make('Titre hero', 'hero.title')->required(),
+        Text::make('Sous-titre hero', 'hero.subtitle')->required(),
+        Select::make('Couleur d\'accent hero', 'hero.accent')->choices([...])->required(),
+
+        // Repeater fields
+        Repeater::make('Points forts', 'highlights')->fields([
+            Text::make('Valeur', 'value')->required(),
+        ])->maxRows(5),
+
+        WYSIWYGEditor::make('Problème rencontré', 'problem')->required(),
+        WYSIWYGEditor::make('Solution proposée', 'solution')->required(),
+
+        Repeater::make('Prestations incluses', 'features')->fields([
+            Text::make('Titre', 'title')->required(),
+            Textarea::make('Description', 'desc')->required(),
+        ]),
+
+        Repeater::make('Technologies utilisées', 'technologies')->fields([
+            Text::make('Techno', 'value')->required(),
+        ]),
+
+        Repeater::make('FAQ', 'faq')->fields([
+            Text::make('Question', 'q')->required(),
+            Textarea::make('Réponse', 'a')->required(),
+        ]),
+
+        Select::make('Icône', 'icon')->choices([
+            'Globe' => 'Globe', 'Code2' => 'Code2', 'Search' => 'Search',
+            // ...
+        ])->required(),
+    ])
+    ->make();
+```
+
+</Accordion>
+
+<Accordion title="Réalisation (portfolio projects)">
+
+```php title="configuration/posts/realisations.php"
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\{Image, Repeater, Select, Text, Textarea, URL, WysiwygEditor};
+
+PostType::create('realisation', 'Réalisation', 'Réalisations', 'realisations', 'art', true)
+    ->fields([
+        Image::make('Image', 'image'),
+        Select::make('Type de projet', 'type')->choices([
+            'Site vitrine'      => 'Site vitrine',
+            'Application web'   => 'Application web',
+            'E-commerce'        => 'E-commerce',
+            'Site sur mesure'   => 'Site sur mesure',
+            'Refonte SEO'       => 'Refonte SEO',
+            'Automatisation'    => 'Automatisation',
+        ])->required(),
+        Text::make('Année', 'year')->required(),
+        Text::make('Durée (ex: 3 semaines)', 'duration')->required(),
+        Text::make('Client', 'customer')->required(),
+        URL::make('Lien du projet', 'project_url'),
+        Textarea::make('Résultat (phrase courte)', 'result')->required()->rows(2),
+        WysiwygEditor::make('Contexte / Problème', 'challenge')->required(),
+        WysiwygEditor::make('Solution apportée', 'solution')->required(),
+        Repeater::make('Technologies utilisées', 'technologies')->fields([
+            Text::make('Technologie', 'tech')->required(),
+        ])->minRows(1),
+        Repeater::make('Fonctionnalités clés', 'features')->fields([
+            Text::make('Fonctionnalité', 'feature')->required(),
+        ])->minRows(1),
+    ])
+    ->make();
+```
+
+</Accordion>
+
+---
+
+## The `EloquentCPT` Base Model
+
+Every generated model class extends `EloquentCPT`. When a `WP_Post` is passed to the constructor, the base class:
+
+1. Maps core WordPress fields to typed properties (`id`, `type`, `title`, `slug`, `date`, `excerpt`).
+2. Calls `get_fields($this->id)` (ACF) and assigns every returned key as a public property dynamically.
+
+```php title="src/Eloquent/EloquentCPT.php (core properties)"
+class EloquentCPT
+{
+    public int    $id;
+    public string $type;
+    public string $title;
+    public string $content;
+    public string $excerpt;
+    public string $author;
+    public string $date;
+    public string $thumbnail;
+    public string $slug;
+
+    // All ACF fields are added dynamically as public properties
+    // e.g. $article->readTime, $article->content, $service->faq, etc.
+}
+```
+
+### Starting a query
+
+```php
+// Returns a QueryBuilder scoped to this post type
+Article::query(): QueryBuilder
+```
+
+`query()` uses `ReflectionClass` to detect the calling class name and reads the `static $model` property to resolve the WordPress post type key.
+
+---
+
+## QueryBuilder Reference
+
+All `QueryBuilder` methods (except `get()` and `all()`) return `$this` for chaining. Results are always returned as an `Illuminate\Support\Collection` of typed `EloquentCPT` objects.
+
+| Method | Signature | Description |
+|---|---|---|
+| `all()` | `all(): Collection` | Fetches all posts (no limit). Shorthand for `limit(-1)->get()`. |
+| `limit()` | `limit(int $limit): self` | Sets `posts_per_page`. Use `-1` for unlimited. |
+| `offset()` | `offset(int $offset): self` | Skips the first N posts. |
+| `orderBy()` | `orderBy(string $value, string $order): self` | Orders by field. `$order` must be `ASC` or `DESC`. |
+| `where()` | `where(string $key, string $op, $value): self` | Adds an ACF meta query condition (AND by default). Omit `$op` to use `=`. |
+| `orWhere()` | `orWhere(string $key, string $op, $value): self` | Adds a condition and sets the meta relation to `OR`. |
+| `andWhere()` | `andWhere(string $key, string $op, $value): self` | Adds a condition and explicitly sets the meta relation to `AND`. |
+| `taxonomy()` | `taxonomy(string $taxonomy, string\|array $term): self` | Filters by taxonomy term slug. Pass `'*'` to match all terms (no-op). |
+| `with()` | `with(string $relationType, string ...$relations): self` | Eager-loads taxonomy terms in a single optimised SQL query. Only `'taxonomy'` is supported. |
+| `search()` | `search(string $query): self` | Full-text search using WordPress `WP_Query`'s `s` parameter. Input is sanitised. |
+| `matchIds()` | `matchIds(array $ids): self` | Restricts results to a specific list of post IDs (preserves order). |
+| `matchSlugs()` | `matchSlugs(array $slugs): self` | Restricts results to a specific list of post slugs (preserves order). |
+| `get()` | `get(): Collection` | Executes the query and returns hydrated model objects. |
+
+<Note>
+  `where()` / `orWhere()` / `andWhere()` operate on **ACF field keys** (stored in `wp_postmeta`), not on native WordPress post columns. For ordering by date use `orderBy('date', 'DESC')`.
+</Note>
+
+---
+
+## Query Examples
+
+<CodeGroup>
+
+```php Fetch articles by category
+// Fetch all published articles in the 'tutorials' category,
+// sorted newest-first, with category taxonomy eager-loaded.
+$articles = Article::query()
+    ->taxonomy('category', 'tutorials')
+    ->orderBy('date', 'DESC')
+    ->with('taxonomy', 'category')
+    ->get();
+
+// Each $article now has a ->category array of term objects
+foreach ($articles as $article) {
+    echo $article->title;
+    echo $article->readTime;          // ACF field
+    foreach ($article->category as $term) {
+        echo $term->name;             // eager-loaded
+    }
+}
+```
+
+```php Paginated query with meta filter
+// Fetch page 2 (10 per page) of services that have a specific icon
+$services = Service::query()
+    ->where('icon', 'Globe')
+    ->orderBy('date', 'ASC')
+    ->limit(10)
+    ->offset(10)
+    ->get();
+```
+
+```php Match by slugs
+// Load specific realisations by slug (e.g. from a curated list)
+$featured = Realisation::query()
+    ->matchSlugs(['project-alpha', 'project-beta', 'project-gamma'])
+    ->get();
+```
+
+```php BlogController using query in controller
+namespace Ahon\WPCMS\App\Controllers\Web;
+
+use Ahon\WPCMS\App\PostTypes\Article;
+use Ahon\WPCMS\Controllers\CPTControllerInterface;
+use Ahon\WPCMS\Controllers\WebController;
+use Ahon\WPCMS\Eloquent\EloquentCPT;
+
+class BlogController extends WebController implements CPTControllerInterface
+{
+    public function archive(): string|bool
+    {
+        $posts = Article::query()
+            ->orderBy('date', 'DESC')
+            ->with('taxonomy', 'category')
+            ->all();
+
+        return $this->view('blog', ['posts' => $posts]);
+    }
+
+    public function single(?EloquentCPT $post): string|bool
+    {
+        $related = Article::query()
+            ->limit(3)
+            ->orderBy('date', 'DESC')
+            ->get();
+
+        return $this->postView('blog_single', $post, ['related' => $related]);
+    }
+}
+```
+
+</CodeGroup>
+
+---
+
+## Querying Taxonomy Terms
+
+Use `EloquentCPT::queryTerms()` to retrieve all terms for a given taxonomy, returned as a `Collection` of simple arrays. The method automatically filters out uncategorised / default terms (`non-classe`, `Non classé`).
+
+```php
+// Returns Collection<{ id, name, slug }>
+$categories = Article::queryTerms('category');
+
+// Only return terms that have at least one post
+$categories = Article::queryTerms('category', hideEmpty: true);
+```
+
+```json
+[
+  { "id": 3, "name": "Tutorials", "slug": "tutorials" },
+  { "id": 7, "name": "Case Studies", "slug": "case-studies" }
+]
+```
+
+---
+
+## Generating Model Classes with WP-CLI
+
+`EloquentManager::generate()` scans all registered post types and writes a PHP class file for each one into `app/PostTypes/`. Run it whenever you add or rename a post type:
+
+```bash
+wp eloquent:generate
+```
+
+A generated model looks like this:
+
+```php title="app/PostTypes/Article.php (auto-generated)"
+<?php
+
+namespace Ahon\WPCMS\App\PostTypes;
+
+class Article extends \Ahon\WPCMS\Eloquent\EloquentCPT
+{
+    public static string $model = 'article';
+}
+```
+
+<Warning>
+  `wp eloquent:generate` **deletes all existing files** in `app/PostTypes/` before regenerating them. Do not add custom code directly to generated files. Extend the generated class or use a trait instead.
+</Warning>
+
+The `$model` static property is the WordPress post type key used by `QueryBuilder::make()` to scope all queries. It is also read by `Route::CPT()` to resolve the archive URL slug at runtime.

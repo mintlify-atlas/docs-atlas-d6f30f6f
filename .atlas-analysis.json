@@ -1,0 +1,126 @@
+{
+  "projectType": "framework",
+  "projectName": "WP SSR Framework",
+  "projectDescription": "A headless static-hybrid WordPress framework that renders a React SPA through server-side controllers, with a built-in router, Eloquent-style ORM for custom post types, SSG caching, SEO management, and a REST API layer — all running as a WordPress mu-plugin on top of Bedrock.",
+  "theme": "luma",
+  "primaryColor": "#545cdc",
+  "lightColor": "#a4acec",
+  "darkColor": "#838ce8",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guide",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "getting-started/installation",
+              "getting-started/configuration",
+              "getting-started/project-structure"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/kernel-providers",
+              "concepts/web-routing",
+              "concepts/api-routing",
+              "concepts/post-types-orm"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/static-site-generator",
+              "features/seo-management",
+              "features/analytics",
+              "features/cache",
+              "features/contact-forms"
+            ]
+          },
+          {
+            "group": "Frontend",
+            "pages": [
+              "frontend/react-spa",
+              "frontend/wp-sync",
+              "frontend/vite-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "PHP API",
+            "pages": [
+              "reference/kernel",
+              "reference/web-route",
+              "reference/api-route",
+              "reference/post-type",
+              "reference/query-builder",
+              "reference/service-provider",
+              "reference/request-validator"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/environment-variables",
+              "reference/wp-options"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Headless WordPress with a custom PHP controller-based web router that intercepts requests before theme rendering",
+    "Static Site Generator (SSG) that renders pages to HTML via an external headless browser API and serves them to bots",
+    "Eloquent-style ORM (EloquentCPT) wrapping WordPress custom post types with a fluent QueryBuilder",
+    "ACF Pro integration for structured custom post type fields defined entirely in PHP",
+    "REST API router registering custom endpoints under /api/v1 via the WordPress REST API",
+    "React 19 + Vite SPA loaded as the frontend, with server-injected window.__wp_data__ and soft navigation",
+    "Built-in SEO management with ACF fields, per-post score tracking, and an admin dashboard",
+    "Plausible Analytics integration embedded directly in the WordPress admin",
+    "Service provider system for modular bootstrapping (routing, cache, SEO, SSG, analytics, rate limiting)",
+    "WP-CLI commands: eloquent:generate and pages:sync",
+    "Telegram notifications for new contact / quote form submissions",
+    "Bedrock-based project structure with Composer dependency management and dotenv configuration"
+  ],
+  "publicApiSurface": [
+    "Kernel::configure()->withProviders([])->boot()",
+    "Route::get(string $path, string $name, array $controller): WebRouteDefinition",
+    "Route::CPT(string $path, string $postType, string $controller): void",
+    "ApiRoute::get/post/put/patch/delete(string $path, array $controller, bool $auth): ApiRouteDefinition",
+    "ApiRoute::group(string $prefix, array $routeDefinitions): void",
+    "PostType::create(string $slug, string $title, string $title_plural, string $url_rewrite, string $icon, bool $has_seo): PostType",
+    "PostType->taxonomy(string $slug, ...): PostType",
+    "PostType->fields(array $fields): PostType",
+    "PostType->make(): void",
+    "EloquentCPT::query(): QueryBuilder",
+    "EloquentCPT::queryTerms(string $taxonomy, bool $hideEmpty): array",
+    "QueryBuilder->all(): Collection",
+    "QueryBuilder->limit(int $limit): QueryBuilder",
+    "QueryBuilder->orderBy(string $value, string $order): QueryBuilder",
+    "QueryBuilder->where(string $key, string $operator, $value): QueryBuilder",
+    "QueryBuilder->taxonomy(string $taxonomy, string|array $term): QueryBuilder",
+    "QueryBuilder->with(string $relationType, string ...$relations): QueryBuilder",
+    "QueryBuilder->get(): Collection",
+    "ApiRequest::rules(): array",
+    "ApiRequest::validate(WP_REST_Request $request): array",
+    "BaseServiceProvider->register(): void",
+    "BaseServiceProvider->boot(): void",
+    "StaticSiteGeneratorService->generatePostHTML(WP_Post $post): string",
+    "StaticSiteGeneratorService->clearAll(): void",
+    "WP-CLI: wp eloquent:generate",
+    "WP-CLI: wp pages:sync",
+    "REST API: POST /api/v1/contact",
+    "REST API: POST /api/v1/devis",
+    "REST API: POST /api/v1/ssg/page",
+    "REST API: DELETE /api/v1/ssg/delete",
+    "wp-sync.ts: boot(), navigate(url), prefetch(url), getWPData(), getWPView(), useWPData()"
+  ]
+}

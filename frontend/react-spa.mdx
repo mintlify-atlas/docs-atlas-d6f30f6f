@@ -1,0 +1,252 @@
+---
+title: "React SPA Architecture in WP SSR Framework"
+sidebarTitle: "React SPA"
+description: "How WP SSR serves a React single-page app through PHP controllers, injecting WordPress data as window globals before the SPA boots."
+---
+
+The React SPA is the front-end half of the WP SSR Framework. Rather than running a Node server, a PHP controller renders a single `index.html` shell that contains `<div id="root">` and three `window` globals pre-populated by WordPress. React then boots into that shell, reads the globals, resolves the correct page component, and mounts — all without a full-page reload on subsequent navigations. This page covers the HTML shell, the window globals, the routes map, page component conventions, the `<Seo>` component, and how soft navigation fits in.
+
+## How PHP Serves the Shell
+
+`src/SSR/client.php` is the PHP template that outputs the complete HTML document. Before the `<div id="root">` element, it injects a `<script>` block that serialises three WordPress values directly into the page:
+
+```php
+<script>
+    window.__wp_data__ = <?= json_encode($__wp_data__['data'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    window.__wp_view__ = "<?= $__wp_data__['view'] ?? '' ?>";
+    window.__wp_seo__  = <?= json_encode($__wp_data__['seo']  ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+</script>
+```
+
+| Global | Type | Purpose |
+|---|---|---|
+| `window.__wp_data__` | `Record<string, any>` | Page-specific data returned by the PHP controller (posts, services, etc.) |
+| `window.__wp_view__` | `string` | The view key that maps to a React page component (e.g. `"blog"`, `"home"`) |
+| `window.__wp_seo__` | `object` | SEO fields: `site_title`, `page_title`, `description`, `url` |
+
+The shell's `<body>` contains only the mount point and, in dev mode, the Vite entry script:
+
+```html
+<body>
+  <div id="root"></div>
+  <!-- dev mode only -->
+  <script type="module" src="http://localhost:8080/src/main.tsx" defer></script>
+</body>
+```
+
+In production, the hashed CSS and JS bundles are injected into `<head>` by the same template. See [Vite Integration](/frontend/vite-integration) for details.
+
+---
+
+## Entry Point
+
+`src/main.tsx` is the Vite entry point. It imports the global stylesheet and immediately calls `boot()` from the router module, which reads the window globals and mounts the first view:
+
+```tsx
+import "./index.css";
+import { boot } from "@/lib/wp-router.tsx";
+
+boot();
+```
+
+`boot()` is intentionally minimal — there is no `ReactDOM.render` call here. The `createRoot` call lives inside `wp-router.tsx` and is reused across navigations so React never fully unmounts the tree.
+
+---
+
+## The App Shell Component
+
+`App.tsx` wraps every page with the persistent chrome (header, footer) and the `HelmetProvider` needed by `<Seo>`:
+
+```tsx
+import React from "react";
+import { SiteHeader } from "@/components/site-header";
+import { SiteFooter } from "@/components/site-footer";
+import { HelmetProvider } from "react-helmet-async";
+
+export default function App({ children }: { children: React.ReactNode }) {
+  return (
+    <HelmetProvider>
+      <div className="flex min-h-screen flex-col">
+        <SiteHeader />
+        <main className="flex-1">{children}</main>
+        <SiteFooter />
+      </div>
+    </HelmetProvider>
+  );
+}
+```
+
+The router calls `mount(View)` which renders `<App><View /></App>`, so `SiteHeader` and `SiteFooter` persist across navigations without remounting.
+
+---
+
+## The Routes Map
+
+`src/routes.ts` is a plain object that maps every view name string to a dynamic `import()` of the corresponding page component. The view name is the exact string set by the PHP controller in `$view`:
+
+```ts
+export const routes = {
+  'home':                 () => import("./pages/Home"),
+  'agence':               () => import("./pages/Agence"),
+  'services':             () => import("./pages/ServicesIndex"),
+  'services_single':      () => import("./pages/ServiceDetail"),
+  'realisations':         () => import("./pages/Realisations"),
+  'realisations_single':  () => import("./pages/RealisationDetail.tsx"),
+  'blog':                 () => import("./pages/BlogIndex"),
+  'blog_single':          () => import("./pages/BlogPost"),
+  'contact':              () => import("./pages/Contact"),
+  'devis':                () => import("./pages/Devis"),
+}
+```
+
+<Note>
+Every value is a **lazy dynamic import** — Vite code-splits each page into its own chunk so the initial JS payload is minimal. The `resolveView()` function in `wp-sync.ts` uses this map to load only the chunk needed for the current view.
+</Note>
+
+If `window.__wp_view__` contains a string that is not a key in this map, `resolveView()` falls back to `pages/NotFound`.
+
+### Adding a New Route
+
+<Steps>
+  <Step title="Create the page component">
+    Add `src/pages/MyPage.tsx` with a default export React component.
+  </Step>
+  <Step title="Register the view key">
+    Add an entry to `routes.ts`:
+    ```ts
+    'my_view': () => import("./pages/MyPage"),
+    ```
+  </Step>
+  <Step title="Set the view in PHP">
+    In the PHP controller, set `$view = 'my_view'` and populate `$data` with whatever the page needs.
+  </Step>
+</Steps>
+
+---
+
+## Page Components
+
+Every page component reads its WordPress data with `useWPData<T>()`, typed to the exact shape the PHP controller returns. There is no prop drilling and no API call — the data is already in `window.__wp_data__` by the time the component renders.
+
+### Example — BlogIndex
+
+```tsx
+import { useWPData } from "@/lib/wp-sync.ts";
+import { Seo } from "@/components/seo.tsx";
+
+export default function BlogIndex() {
+  const data = useWPData<{ posts: BlogPost[] }>();
+  const posts = data.posts;
+
+  return (
+    <div>
+      <Seo />
+      <section>
+        <div className="mx-auto max-w-5xl px-6 py-20">
+          <h1>Notes sur la tech, le web, le SEO et le GEO.</h1>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-5xl px-6 py-16 grid gap-6 md:grid-cols-2">
+        {posts.map((p) => (
+          <a key={p.id || p.slug} href={`/blog/${p.slug}`}>
+            <h2>{p.title}</h2>
+            <p>{p.excerpt}</p>
+          </a>
+        ))}
+      </section>
+    </div>
+  );
+}
+```
+
+### Example — ServiceDetail with normalization
+
+When the raw WordPress ACF data needs reshaping before use, a normalizer function is called immediately after `useWPData`:
+
+```tsx
+import { useWPData } from "@/lib/wp-sync.ts";
+import { normalizeService } from "@/lib/normalize-service.ts";
+import { Seo } from "@/components/seo.tsx";
+
+export default function ServiceDetail() {
+  const data = useWPData<{ post: any; services: any[] }>();
+  const service = data.post ? normalizeService(data.post) : null;
+
+  if (!service) {
+    return (
+      <>
+        <Seo title="Service introuvable" noindex />
+        <div className="mx-auto max-w-3xl px-6 py-24 text-center">
+          <h1>Service introuvable</h1>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Seo
+        jsonLd={[
+          {
+            "@context": "https://schema.org",
+            "@type": "Service",
+            name: service.hero.title,
+            description: service.seo_description,
+            provider: { "@type": "Organization", name: "ahon" },
+          },
+        ]}
+      />
+      <ServicePage service={service} />
+    </>
+  );
+}
+```
+
+<Tip>
+Normalizer functions (`normalize-service.ts`, `normalize-realisation.ts`) live in `src/lib/` and convert the flat ACF key format (e.g. `hero.title`) into a typed nested object. This keeps page components clean and provides a single place to handle API shape changes.
+</Tip>
+
+---
+
+## The `<Seo>` Component
+
+`src/components/seo.tsx` is a thin wrapper around `react-helmet-async`'s `<Helmet>`. On first render it reads `window.__wp_seo__` for defaults, but every prop can be overridden at the page level.
+
+```tsx
+export interface SeoProps {
+  title?:         string;   // overrides wp_seo page_title + site_title
+  description?:   string;   // overrides wp_seo description
+  canonical?:     string;   // overrides wp_seo url
+  ogTitle?:       string;
+  ogDescription?: string;
+  ogType?:        string;   // default: "website"
+  noindex?:       boolean;
+  jsonLd?:        object[]; // injected as <script type="application/ld+json">
+}
+```
+
+When no props are passed, `<Seo />` assembles the title as `"{page_title} — {site_title}"`, sets the meta description, canonical URL, Open Graph tags, and a `summary_large_image` Twitter card — all sourced from `window.__wp_seo__`. Multiple JSON-LD objects can be passed as an array; each becomes its own `<script type="application/ld+json">` tag.
+
+<Note>
+`<Seo />` must be placed inside a component that is a descendant of `<HelmetProvider>`. The `App` shell always provides the provider, so any page component can use `<Seo />` without additional setup.
+</Note>
+
+---
+
+## Soft Navigation
+
+React Router DOM is available as a dependency, but it is **not** used for routing in WP SSR. Navigation is handled by `wp-router.tsx` via two global event listeners:
+
+<CardGroup cols={2}>
+  <Card title="Click interception" icon="computer-mouse">
+    Every click on an internal `<a>` tag is intercepted. `e.preventDefault()` stops the browser navigation and `navigate(link.href)` fetches the next page's JSON data, updates the window globals, and re-mounts the correct React component — all without a full reload.
+  </Card>
+  <Card title="Mouseover prefetch" icon="bolt">
+    Hovering over an internal link triggers `prefetch(link.href)`, which fires a background fetch for the next page's data and stores it in the cache. By the time the user clicks, the data is already available.
+  </Card>
+</CardGroup>
+
+The `popstate` event listener handles browser back/forward buttons by calling `navigate(location.href, true, true)` with `force = true` and `replace = true`.
+
+See [WP Sync](/frontend/wp-sync) for full documentation of `navigate()`, `prefetch()`, and the cache layer.

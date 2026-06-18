@@ -1,0 +1,247 @@
+---
+title: "Configuring WP SSR Framework — Env & Kernel"
+sidebarTitle: "Configuration"
+description: "Complete reference for every .env variable in WP SSR Framework, WP_ENV behaviour across environments, SSG token setup, and the Kernel bootstrap call in wp-ssr.php."
+---
+
+WP SSR Framework is configured entirely through environment variables loaded from the `.env` file in the project root. Bedrock reads this file via `vlucas/phpdotenv` during the bootstrap phase in `config/application.php`, makes all variables available as PHP constants, and then loads an environment-specific override file from `config/environments/{WP_ENV}.php`. This page covers every variable used by the framework, explains the differences between the three supported environments, and shows the exact Kernel bootstrap code that runs on every request.
+
+## Environment file reference
+
+The table below lists every variable from `.env.example`, grouped by concern.
+
+### Database
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DB_NAME` | ✅ Yes* | — | MySQL database name |
+| `DB_USER` | ✅ Yes* | — | MySQL username |
+| `DB_PASSWORD` | ✅ Yes* | — | MySQL password |
+| `DB_HOST` | No | `localhost` | MySQL host (and optional port, e.g. `127.0.0.1:3307`) |
+| `DB_PREFIX` | No | `wp_` | WordPress table prefix |
+| `DATABASE_URL` | No | — | DSN alternative: `mysql://user:pass@host:port/dbname`. When set, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` are ignored. |
+
+\* Required unless `DATABASE_URL` is provided.
+
+### WordPress core
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `WP_ENV` | No | `production` | Active environment name. Controls which `config/environments/*.php` override is loaded. |
+| `WP_HOME` | ✅ Yes | — | Full public URL of the site (e.g. `https://example.com`). Used for `WP_HOME` constant. |
+| `WP_SITEURL` | ✅ Yes | `${WP_HOME}/wp` | URL to the WordPress core directory. Almost always `${WP_HOME}/wp`. |
+
+### SSG / Render API
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `WEB_RENDER_TOKEN` | No | — | Bearer token for authenticating requests to `https://api.ahon.dev/web/render`, the external service used by `StaticSiteGeneratorService` to produce static HTML snapshots for bot traffic. |
+
+### Notifications
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | No | — | Telegram Bot API token. Used by `TelegramNotificationService` to send contact form submissions to a Telegram chat. |
+| `TELEGRAM_CHAT_ID` | No | — | Numeric Telegram chat ID that receives notifications. Pair with `TELEGRAM_BOT_TOKEN`. |
+
+### Health check
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `HEALTH_ENDPOINT_TOKEN` | No | — | Secret token required to call the `/api/v1/health` endpoint, guarded by `HealthAuthGuard` middleware. Generate one at [it-tools.tech/token-generator](https://it-tools.tech/token-generator). |
+
+### WordPress security salts
+
+Generate all eight values at once from [roots.io/salts.html](https://roots.io/salts.html):
+
+```dotenv
+AUTH_KEY=''
+SECURE_AUTH_KEY=''
+LOGGED_IN_KEY=''
+NONCE_KEY=''
+AUTH_SALT=''
+SECURE_AUTH_SALT=''
+LOGGED_IN_SALT=''
+NONCE_SALT=''
+```
+
+## Environment modes (`WP_ENV`)
+
+WP SSR Framework supports three named environments. The value of `WP_ENV` controls both the WordPress debug configuration and framework-level behaviour.
+
+<Tabs>
+  <Tab title="development">
+    Set `WP_ENV=development` for local development. Bedrock loads `config/environments/development.php` which enables full debug output:
+
+    ```php
+    // config/environments/development.php
+    Config::define('SAVEQUERIES', true);
+    Config::define('WP_DEBUG', true);
+    Config::define('WP_DEBUG_DISPLAY', true);
+    Config::define('WP_DEBUG_LOG', env('WP_DEBUG_LOG') ?? true);
+    Config::define('WP_DISABLE_FATAL_ERROR_HANDLER', true);
+    Config::define('SCRIPT_DEBUG', true);
+    Config::define('DISALLOW_INDEXING', true);
+
+    ini_set('display_errors', '1');
+
+    // Enable plugin and theme updates and installation from the admin
+    Config::define('DISALLOW_FILE_MODS', false);
+    ```
+
+    Framework-level effects in `development`:
+    - WordPress query saving is enabled (`SAVEQUERIES`) for profiling.
+    - `DISALLOW_FILE_MODS` is set to `false`, allowing plugin/theme installs from wp-admin.
+    - `DISALLOW_INDEXING` is `true` — Bedrock adds a `X-Robots-Tag: noindex` header so search engines never index the dev site.
+    - The Vite dev server (`bun run dev` in `web/client/`) is expected to be running on its configured HMR port; the `Vite` SSR helper in `src/SSR/Vite.php` connects to it automatically.
+
+    Example `.env` for development:
+
+    ```dotenv
+    DB_NAME='portfolio_dev'
+    DB_USER='root'
+    DB_PASSWORD='secret'
+    WP_ENV='development'
+    WP_HOME='http://localhost:8080'
+    WP_SITEURL="${WP_HOME}/wp"
+    HEALTH_ENDPOINT_TOKEN='dev-token-not-secret'
+    ```
+  </Tab>
+  <Tab title="staging">
+    Set `WP_ENV=staging` for a pre-production review environment. Bedrock loads `config/environments/staging.php`.
+
+    ```php
+    // config/environments/staging.php (Bedrock default)
+    Config::define('SAVEQUERIES', false);
+    Config::define('WP_DEBUG', false);
+    Config::define('WP_DEBUG_DISPLAY', false);
+    Config::define('DISALLOW_INDEXING', true);
+    ```
+
+    In staging, `WP_DEBUG` is off and indexing is still blocked. Fill in real credentials but keep `WEB_RENDER_TOKEN` pointed at a staging render endpoint if you run one:
+
+    ```dotenv
+    DB_NAME='portfolio_staging'
+    DB_USER='staging_user'
+    DB_PASSWORD='strong-password'
+    WP_ENV='staging'
+    WP_HOME='https://staging.example.com'
+    WP_SITEURL="${WP_HOME}/wp"
+    WEB_RENDER_TOKEN='your-staging-token'
+    HEALTH_ENDPOINT_TOKEN='random-256-bit-token'
+    TELEGRAM_BOT_TOKEN='123456:ABCdef'
+    TELEGRAM_CHAT_ID='-100123456789'
+    ```
+  </Tab>
+  <Tab title="production">
+    Set `WP_ENV=production` (or omit `WP_ENV` — Bedrock defaults to `production`). No environment override file is loaded; the hardened defaults in `config/application.php` apply:
+
+    - `DISALLOW_FILE_EDIT` → `true` (no theme/plugin editor)
+    - `DISALLOW_FILE_MODS` → `true` (no wp-admin installs)
+    - `AUTOMATIC_UPDATER_DISABLED` → `true`
+    - All debug output disabled
+
+    ```dotenv
+    DB_NAME='portfolio_prod'
+    DB_USER='prod_user'
+    DB_PASSWORD='very-strong-password'
+    WP_ENV='production'
+    WP_HOME='https://example.com'
+    WP_SITEURL="${WP_HOME}/wp"
+    WEB_RENDER_TOKEN='production-render-token'
+    HEALTH_ENDPOINT_TOKEN='production-health-token'
+    TELEGRAM_BOT_TOKEN='123456:ABCdef'
+    TELEGRAM_CHAT_ID='-100123456789'
+    AUTH_KEY='...'
+    SECURE_AUTH_KEY='...'
+    # ... (all eight salts)
+    ```
+
+    <Tip>
+      In production, set `WP_DEBUG_LOG` to an absolute path outside the web root (e.g. `/var/log/wordpress/debug.log`) so errors are captured without being exposed over HTTP.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## WEB_RENDER_TOKEN — Static Site Generation
+
+The `WEB_RENDER_TOKEN` variable authenticates calls made by `StaticSiteGeneratorService` to the external render API at `https://api.ahon.dev/web/render`. When a post or page is published in WordPress, `SSGServiceProvider` hooks into `save_post` and dispatches a render request, sending the page URL and the bearer token in the `Authorization` header. The render service visits the URL, executes the React SPA in a headless browser, and saves the resulting static HTML — which is then served to bots by `BotDetector` in the web router.
+
+<Note>
+  Without a valid `WEB_RENDER_TOKEN`, static snapshot generation will fail silently in production (the API call returns a 401). Human visitors still receive the React SPA; only bot-served static HTML is affected.
+</Note>
+
+## TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID — Notifications
+
+These two variables are optional. When both are present, `TelegramNotificationService` sends a formatted message to the specified Telegram chat whenever a visitor submits the contact or quote form through the `ContactController` API endpoint. Leave them empty to disable notifications entirely.
+
+To obtain these values:
+1. Create a bot via [@BotFather](https://t.me/botfather) on Telegram — it will give you the `TELEGRAM_BOT_TOKEN`.
+2. Add the bot to a group or channel and retrieve the `TELEGRAM_CHAT_ID` (use the Telegram API's `getUpdates` method or a helper bot).
+
+## Kernel bootstrap (`wp-ssr.php`)
+
+The `wp-ssr.php` mu-plugin file is the framework's entry point. After booting Roots Acorn and loading `app/helpers.php`, it calls `Kernel::configure()` with the full list of application service providers:
+
+```php
+<?php
+
+/**
+ * Plugin Name: WP SSR Framework
+ * Description: Headless CMS core for WordPress (SSR mode)
+ */
+
+use Ahon\WPCMS\Kernel;
+use Roots\Acorn\Application;
+
+require_once __DIR__.'/vendor/autoload.php';
+
+/*
+|--------------------------------------------------------------------------
+| Boot Acorn
+|--------------------------------------------------------------------------
+*/
+
+if (! class_exists(\Roots\Acorn\Application::class)) {
+    wp_die(
+        __('You need to install Acorn to use this site.', 'domain'),
+        '',
+        [
+            'link_url'  => 'https://roots.io/acorn/docs/installation/',
+            'link_text' => __('Acorn Docs: Installation', 'domain'),
+        ]
+    );
+}
+
+add_action('after_setup_theme', function () {
+    Application::configure()
+        ->withProviders([
+            App\Providers\ThemeServiceProvider::class,
+        ])
+        ->boot();
+}, 0);
+
+/*
+|--------------------------------------------------------------------------
+| Bootstrap custom Kernel
+|--------------------------------------------------------------------------
+*/
+
+Kernel::configure()
+    ->withProviders([
+        Ahon\WPCMS\App\Providers\AppServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RateLimitServiceProvider::class,
+        Ahon\WPCMS\App\Providers\CacheServiceProvider::class,
+        Ahon\WPCMS\App\Providers\AnalyticsServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SEOServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RoutingServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SSGServiceProvider::class,
+    ])
+    ->boot();
+```
+
+<Tip>
+  Add your own service providers to the `withProviders()` array to extend framework behaviour. Each provider must implement `Ahon\WPCMS\Providers\ServiceProviderInterface` or extend `Ahon\WPCMS\Providers\BaseServiceProvider`.
+</Tip>
+
+The `Kernel::boot()` method registers each provider, initialises `EloquentManager`, and hooks the `ApiRouter`, `WebRouter`, `PostType`, and `Option` registries into the WordPress action lifecycle at carefully chosen priorities so they execute in the correct order relative to theme setup.

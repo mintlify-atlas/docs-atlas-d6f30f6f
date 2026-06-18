@@ -1,0 +1,275 @@
+---
+title: "API Routing — REST Endpoints Under /api/v1"
+sidebarTitle: "API Routing"
+description: "Register typed REST endpoints under /api/v1 with WP SSR's ApiRouter, including auth guards, custom middleware, wildcard segments, and curl examples."
+---
+
+The **ApiRouter** extends WordPress's native REST API to give you a clean, Laravel-style routing surface. All routes are registered under the `api/v1` namespace (rewritten from `/wp-json/api/v1` to `/api/v1` via server rewrite rules) on the `rest_api_init` hook. Each route maps an HTTP method + path to a controller method, and can optionally require authentication or run one or more middleware classes before the controller is invoked.
+
+---
+
+## How the Router Is Bootstrapped
+
+```php title="src/Kernel.php (excerpt)"
+add_action('rest_api_init', function () {
+    (new ApiRouter('api/v1'))->init();
+}, 30);
+```
+
+`ApiRouter::init()` loads the built-in framework routes followed by `configuration/routes/api.php`, then calls `registerRoutes()` which iterates every `ApiRouteDefinition` and calls WordPress's `register_rest_route()` for each one.
+
+---
+
+## `ApiRoute` Static Methods
+
+Every method returns an `ApiRouteDefinition` so you can chain `.middlewares()` on it immediately.
+
+```php title="src/Routing/Api/ApiRoute.php"
+use Ahon\WPCMS\Routing\Api\ApiRoute as Route;
+
+// HTTP GET
+Route::get(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+
+// HTTP POST
+Route::post(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+
+// HTTP PUT
+Route::put(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+
+// HTTP PATCH
+Route::patch(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+
+// HTTP DELETE
+Route::delete(string $path, array $controller, bool $auth = false): ApiRouteDefinition
+
+// Group routes under a shared prefix
+Route::group(string $prefix, array $routeDefinitions): void
+```
+
+The `$controller` parameter is always a two-element array: `[ControllerClass::class, 'methodName']`.
+
+---
+
+## Registered Routes
+
+```php title="configuration/routes/api.php"
+use Ahon\WPCMS\App\Controllers\Api\ContactController;
+use Ahon\WPCMS\Routing\Api\ApiRoute as Route;
+
+Route::post('/contact', [ContactController::class, 'contact']);
+Route::post('/devis',   [ContactController::class, 'devis']);
+```
+
+<Note>
+  Additional internal routes (e.g. `/health`, `/configuration/analytics`) exist in the framework's own `src/_configuration/routes/api.php` and are loaded before your application routes. Commented examples in your `api.php` show how to apply middleware to them.
+</Note>
+
+---
+
+## Authentication
+
+Pass `true` as the third argument to any route factory method to require a logged-in WordPress user. The `permission_callback` checks `is_user_logged_in()` before the controller is called.
+
+```php
+// Only accessible to authenticated WordPress users
+Route::get('/account/profile', [AccountController::class, 'profile'], true);
+```
+
+If the user is not logged in, WordPress returns a `401 Unauthorized` REST error automatically.
+
+---
+
+## Middleware
+
+Attach one or more middleware classes by chaining `.middlewares()` on the returned `ApiRouteDefinition`:
+
+```php
+Route::get('/health', [AppController::class, 'health'])
+    ->middlewares([
+        Ahon\WPCMS\App\Middlewares\HealthAuthGuard::class,
+    ]);
+```
+
+The `middlewares()` method merges any additional classes with existing ones, so you can call it multiple times:
+
+```php title="src/Routing/Api/ApiRouteDefinition.php"
+public function middlewares(array $middlewares): ApiRouteDefinition
+{
+    $this->middlewares = array_merge($this->middlewares, $middlewares);
+    return $this;
+}
+```
+
+### Middleware interface
+
+Every middleware must implement `BaseMiddleware`:
+
+```php title="src/Middlewares/BaseMiddleware.php"
+interface BaseMiddleware
+{
+    public function handle(\WP_REST_Request $request): bool;
+}
+```
+
+The `handle()` method must return `true` to allow the request through, or `false` (or a `WP_Error`) to reject it. Middlewares are executed in the order they appear in the array. If any returns `false` or a `WP_Error`, subsequent middlewares and the controller are **not** called.
+
+### Example: `HealthAuthGuard`
+
+```php title="app/Middlewares/HealthAuthGuard.php"
+namespace Ahon\WPCMS\App\Middlewares;
+
+class HealthAuthGuard implements \Ahon\WPCMS\Middlewares\BaseMiddleware
+{
+    public function handle(\WP_REST_Request $request): bool
+    {
+        $expected = env('X-HEALTH-TOKEN');
+        $provided = $this->extractBearer(
+            $request->get_header('Authorization')
+        );
+
+        return $expected && $provided && hash_equals($expected, $provided);
+    }
+
+    private function extractBearer(?string $header): ?string
+    {
+        if (!$header) { return null; }
+
+        if (preg_match('/Bearer\s(\S+)/', $header, $matches)) {
+            return $matches[1];
+        }
+
+        return null;
+    }
+}
+```
+
+The guard reads a `Bearer` token from the `Authorization` header and compares it with the `X-HEALTH-TOKEN` environment variable using `hash_equals()` to prevent timing attacks.
+
+---
+
+## Wildcard Path Segments
+
+Use curly-brace placeholders in your path string for dynamic segments. The router converts them to named capture groups in the WordPress REST regex:
+
+| Route definition | Resolved regex |
+|---|---|
+| `/articles/{slug}` | `/articles/(?P<slug>[a-zA-Z0-9-]+)` |
+| `/users/{id}/posts/{slug}` | `/users/(?P<id>[a-zA-Z0-9-]+)/posts/(?P<slug>[a-zA-Z0-9-]+)` |
+
+Inside your controller, read the captured value via the standard `WP_REST_Request` API:
+
+```php
+public function show(\WP_REST_Request $request): array
+{
+    $slug = $request->get_param('slug');
+    // ...
+}
+```
+
+<Warning>
+  The wildcard pattern `[a-zA-Z0-9-]` matches letters, digits, and hyphens only. If you need to match underscores or other characters, register the route directly with `register_rest_route()` and write a custom regex.
+</Warning>
+
+---
+
+## Controller Example
+
+API controllers extend `ApiController` and receive a `WP_REST_Request` argument. They return plain PHP arrays, which WordPress serialises to JSON automatically.
+
+```php title="app/Controllers/Api/ContactController.php"
+namespace Ahon\WPCMS\App\Controllers\Api;
+
+use Ahon\WPCMS\Controllers\ApiController;
+use Ahon\WPCMS\Exceptions\ValidationException;
+
+class ContactController extends ApiController
+{
+    public function contact(\WP_REST_Request $request): array
+    {
+        try {
+            $validated = $this->validate($request, ContactRequest::class);
+        } catch (ValidationException $e) {
+            return $this->error('Validation error', 'contact', 422, $e->getErrors());
+        }
+
+        // Send Telegram notification, save to DB, etc.
+
+        return $this->success([]);
+    }
+
+    public function devis(\WP_REST_Request $request): array
+    {
+        try {
+            $validated = $this->validate($request, DevisRequest::class);
+        } catch (ValidationException $e) {
+            return $this->error('Validation error', 'devis', 422, $e->getErrors());
+        }
+
+        return $this->success([]);
+    }
+}
+```
+
+---
+
+## curl Examples
+
+<CodeGroup>
+
+```bash POST /api/v1/contact
+curl -X POST https://example.com/api/v1/contact \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":    "Jane Doe",
+    "email":   "jane@example.com",
+    "phone":   "+33 6 00 00 00 00",
+    "project": "Site vitrine",
+    "message": "Bonjour, je souhaite un devis."
+  }'
+```
+
+```bash POST /api/v1/devis
+curl -X POST https://example.com/api/v1/devis \
+  -H "Content-Type: application/json" \
+  -d '{
+    "firstName":   "Jane",
+    "lastName":    "Doe",
+    "email":       "jane@example.com",
+    "phone":       "+33 6 00 00 00 00",
+    "company":     "Acme Corp",
+    "projectType": "Application web",
+    "budget":      "5000-10000",
+    "deadline":    "3 mois",
+    "needs":       "Refonte complète avec SSR et CMS headless."
+  }'
+```
+
+```bash GET /api/v1/health (with Bearer token)
+curl -X GET https://example.com/api/v1/health \
+  -H "Authorization: Bearer your-health-token-here"
+```
+
+</CodeGroup>
+
+### Successful response shape
+
+```json
+{
+  "success": true,
+  "data": {}
+}
+```
+
+### Validation error response shape
+
+```json
+{
+  "success": false,
+  "message": "Validation error",
+  "context": "contact",
+  "status": 422,
+  "errors": {
+    "email": ["The email field is required."]
+  }
+}
+```

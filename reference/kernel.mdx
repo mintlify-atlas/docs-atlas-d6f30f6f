@@ -1,0 +1,149 @@
+---
+title: "Kernel — WP SSR Framework Bootstrap"
+sidebarTitle: "Kernel"
+description: "The Kernel class is the framework entry point. It wires service providers, Eloquent, routing, post types, and options into WordPress action hooks."
+---
+
+The `Kernel` class is the central bootstrap controller for WP SSR Framework. It is instantiated once in `wp-ssr.php`, receives your service provider class names via `withProviders()`, and then calls `boot()` to bind every framework subsystem to the correct WordPress action hook. Under the hood, construction also runs `checkThemeRequirements()` to assert that ACF Pro is active before anything else runs.
+
+---
+
+## `Kernel::configure(): Kernel`
+
+Static factory method that constructs a new `Kernel` instance and immediately validates theme requirements.
+
+```php
+$kernel = Kernel::configure();
+```
+
+<Note>
+  `configure()` calls `checkThemeRequirements()` internally. If the `acf_add_options_page` function (provided by **ACF Pro**) is not available, the method calls `wp_exit()` with the message `"You must install and activate ACF Pro plugin"` — halting execution.
+</Note>
+
+---
+
+## `Kernel::withProviders(array $providers): Kernel`
+
+Registers an ordered list of service provider class names with the kernel. Providers are booted in the order they are supplied.
+
+<ParamField body="providers" type="array" required>
+  An array of fully-qualified class names that extend `BaseServiceProvider`. Each class must implement `register()` and `boot()`.
+</ParamField>
+
+```php
+Kernel::configure()
+    ->withProviders([
+        App\Providers\AppServiceProvider::class,
+        App\Providers\RateLimitServiceProvider::class,
+        App\Providers\CacheServiceProvider::class,
+    ]);
+```
+
+---
+
+## `Kernel::boot(): Kernel`
+
+Boots the entire framework by binding each subsystem to its WordPress action hook. Returns `$this` for fluency, though no further chaining is typically needed.
+
+```php
+Kernel::configure()
+    ->withProviders([...])
+    ->boot();
+```
+
+Internally, `boot()` performs the following registrations in order:
+
+<Accordion title="Hook registration details">
+
+| Subsystem | WordPress Hook | Priority |
+|---|---|---|
+| `ProviderManager::registerProviders()` | *(immediate)* | — |
+| `EloquentManager` (new instance) | `init` | 10 |
+| `ApiRouter('api/v1')->init()` | `rest_api_init` | 30 |
+| `PostType::init()` | `init` | 20 |
+| `Option::init()` | `after_setup_theme` | default |
+| `WP_Options::register()` | `admin_init` | 40 |
+| `ComposerManager::registerComposers()` | `wp_loaded` | 1 |
+| `WebRouter::init()->handleRequest()` | `wp_loaded` | 5 |
+
+</Accordion>
+
+<Tip>
+  The `ApiRouter` is instantiated with the base path `'api/v1'`, meaning all API routes are available at `/wp-json/api/v1/` (or `/api/v1/` via rewrite rules).
+</Tip>
+
+---
+
+## Complete bootstrap example
+
+This is the exact bootstrap code from `wp-ssr.php` that ships with the framework:
+
+```php wp-ssr.php
+<?php
+/**
+ * Plugin Name: WP SSR Framework
+ * Description: Headless CMS core for WordPress (SSR mode)
+ */
+
+use Ahon\WPCMS\Kernel;
+use Roots\Acorn\Application;
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+/*
+|--------------------------------------------------------------------------
+| Boot Acorn
+|--------------------------------------------------------------------------
+*/
+if (! class_exists(\Roots\Acorn\Application::class)) {
+    wp_die(
+        __('You need to install Acorn to use this site.', 'domain'),
+        '',
+        [
+            'link_url'  => 'https://roots.io/acorn/docs/installation/',
+            'link_text' => __('Acorn Docs: Installation', 'domain'),
+        ]
+    );
+}
+
+add_action('after_setup_theme', function () {
+    Application::configure()
+        ->withProviders([
+            App\Providers\ThemeServiceProvider::class,
+        ])
+        ->boot();
+}, 0);
+
+/*
+|--------------------------------------------------------------------------
+| Bootstrap custom Kernel
+|--------------------------------------------------------------------------
+*/
+Kernel::configure()
+    ->withProviders([
+        Ahon\WPCMS\App\Providers\AppServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RateLimitServiceProvider::class,
+        Ahon\WPCMS\App\Providers\CacheServiceProvider::class,
+        Ahon\WPCMS\App\Providers\AnalyticsServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SEOServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RoutingServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SSGServiceProvider::class,
+    ])
+    ->boot();
+```
+
+<Note>
+  The Acorn `Application` (Roots framework) is booted separately on `after_setup_theme` with priority `0`, before the WP SSR `Kernel` runs. This ensures Acorn's container and service providers are available to any WP SSR providers that depend on them.
+</Note>
+
+---
+
+## Requirement check
+
+The constructor enforces one hard requirement at startup:
+
+| Requirement | Function checked | Error message |
+|---|---|---|
+| ACF Pro | `acf_add_options_page` | `"You must install and activate ACF Pro plugin"` |
+
+If the check fails, `wp_exit()` is called immediately and WordPress stops loading. This guarantees that no framework code runs against an incompatible environment.

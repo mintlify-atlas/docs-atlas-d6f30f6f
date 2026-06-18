@@ -1,0 +1,256 @@
+---
+title: "PostType — Custom Post Type Registration"
+sidebarTitle: "PostType"
+description: "PostType registers WordPress CPTs with ACF Pro field groups, taxonomies, and optional SEO tracking via a fluent builder API, loaded on the init hook."
+---
+
+`PostType` is the fluent builder that creates a WordPress Custom Post Type, registers its ACF Pro field group, attaches taxonomies, and optionally enables SEO tracking — all in one chained expression. Post types are registered on the WordPress `init` hook at priority 20, sourced from `configuration/posts.php`.
+
+Each call to `PostType::create()` internally calls `register_post_type()`, registers an Eloquent model mapping via `EloquentManager::__add()`, and stores the instance in a static registry so it can be retrieved later with `PostType::all()`.
+
+---
+
+## `PostType::create()`
+
+The static factory that begins the builder chain.
+
+```php
+PostType::create(
+    string $slug,
+    string $title,
+    string $title_plural,
+    string $url_rewrite,
+    string $icon,
+    bool $has_seo,
+    string $class_name = 'undefined'
+): PostType
+```
+
+<ParamField body="slug" type="string" required>
+  The unique WP post type slug (e.g. `'article'`). Calls `wp_die()` if the post type already exists.
+</ParamField>
+
+<ParamField body="title" type="string" required>
+  Singular label shown in the WordPress admin (e.g. `'Article'`).
+</ParamField>
+
+<ParamField body="title_plural" type="string" required>
+  Plural label used as the post type `label` property (e.g. `'Articles'`).
+</ParamField>
+
+<ParamField body="url_rewrite" type="string" required>
+  The URL rewrite slug (e.g. `'blog'` → URLs become `/blog/my-post`). Registered with `with_front: false`.
+</ParamField>
+
+<ParamField body="icon" type="string" required>
+  A Dashicons name **without** the `dashicons-` prefix (e.g. `'welcome-write-blog'`).
+</ParamField>
+
+<ParamField body="has_seo" type="boolean" required>
+  When `true`, this post type participates in the framework's SEO tracking system. The SEO ACF field group is attached automatically by the SEO service provider.
+</ParamField>
+
+<ParamField body="class_name" type="string" default="'undefined'">
+  The short class name of the `EloquentCPT` subclass to map to this post type (e.g. `'Article'`). When omitted, the post type slug is used as the class name.
+</ParamField>
+
+---
+
+## `->taxonomy()`
+
+Registers a WordPress taxonomy and optionally attaches an ACF field group to it.
+
+```php
+->taxonomy(
+    string $slug,
+    string $title,
+    string $title_plural,
+    string $url_rewrite,
+    bool $show_in_rest,
+    ?array $fields = null
+): PostType
+```
+
+<ParamField body="slug" type="string" required>
+  The taxonomy slug (e.g. `'category'`).
+</ParamField>
+
+<ParamField body="title" type="string" required>
+  Singular label.
+</ParamField>
+
+<ParamField body="title_plural" type="string" required>
+  Plural label, used as `label` in `register_taxonomy()`.
+</ParamField>
+
+<ParamField body="url_rewrite" type="string" required>
+  The URL rewrite slug for taxonomy archive pages.
+</ParamField>
+
+<ParamField body="show_in_rest" type="boolean" required>
+  Whether to expose this taxonomy in the WordPress REST API.
+</ParamField>
+
+<ParamField body="fields" type="array | null" default="null">
+  An array of ACF field objects (from `extended-acf`). When provided, a field group is registered and attached to this taxonomy's edit screen.
+</ParamField>
+
+---
+
+## `->fields()`
+
+Appends ACF fields to the post type's field group. Can be called multiple times; fields are merged with `array_merge()`.
+
+```php
+->fields(array $fields): PostType
+```
+
+<ParamField body="fields" type="array" required>
+  An array of `Extended\ACF\Fields\*` objects to add to the field group.
+</ParamField>
+
+---
+
+## `->make()`
+
+Finalises the field group and registers it with ACF Pro via `register_extended_field_group()`. The group is scoped to the post type using `Location::where('post_type', $slug)`.
+
+```php
+->make(): void
+```
+
+<Note>
+  You must call `->make()` at the end of every builder chain. Without it, `->fields()` accumulates field definitions in memory but they are never sent to ACF.
+</Note>
+
+---
+
+## `PostType::all(): array`
+
+Returns an associative array of every registered `PostType` instance, keyed by slug.
+
+```php
+$types = PostType::all();
+// ['article' => PostType, 'service' => PostType, 'realisation' => PostType]
+```
+
+---
+
+## SEO integration
+
+When `$has_seo = true`, the framework's `SEOServiceProvider` attaches an additional ACF field group to the post type for managing meta titles, descriptions, and social sharing data. Posts with `has_seo: true` also appear in the SEO audit dashboard.
+
+---
+
+## Complete post type definitions
+
+The following examples are taken directly from the reference application's `configuration/posts/` directory.
+
+<Tabs>
+  <Tab title="Article">
+```php configuration/posts/article.php
+<?php
+
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\Text;
+use Extended\ACF\Fields\WYSIWYGEditor;
+
+PostType::create('article', 'Article', 'Articles', 'blog', 'welcome-write-blog', true)
+    ->taxonomy('category', 'Category', 'Categories', 'blog', true)
+    ->fields([
+        WYSIWYGEditor::make('Contenu', 'content'),
+        Text::make('Temps de lecture', 'readTime'),
+        Text::make('Extrait', 'excerpt'),
+    ])
+    ->make();
+```
+  </Tab>
+  <Tab title="Service">
+```php configuration/posts/service.php
+<?php
+
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\Repeater;
+use Extended\ACF\Fields\Select;
+use Extended\ACF\Fields\Text;
+use Extended\ACF\Fields\Textarea;
+use Extended\ACF\Fields\WYSIWYGEditor;
+
+PostType::create('service', 'Service', 'Services', 'services', 'hammer', true)
+    ->fields([
+        Text::make('Description', 'desc')->required(),
+        Text::make('Label court', 'shortLabel')->required(),
+        Text::make('Tag', 'tag')->required(),
+
+        // Hero section
+        Text::make('Titre hero', 'hero.title')->required(),
+        Text::make('Sous-titre hero', 'hero.subtitle')->required(),
+        Select::make('Couleur d\'accent hero', 'hero.accent')
+            ->choices([
+                'bg-gradient-to-br from-purple-500/20 to-pink-500/20' => 'Pourpre → Rose',
+                'bg-gradient-to-br from-blue-500/20 to-cyan-500/20'   => 'Bleu → Cyan',
+            ])->required(),
+
+        // Key features
+        Repeater::make('Points forts', 'highlights')
+            ->fields([Text::make('Valeur', 'value')->required()])
+            ->maxRows(5),
+
+        WYSIWYGEditor::make('Problème rencontré', 'problem')->required(),
+        WYSIWYGEditor::make('Solution proposée', 'solution')->required(),
+
+        Repeater::make('Prestations incluses', 'features')
+            ->fields([
+                Text::make('Titre', 'title')->required(),
+                Textarea::make('Description', 'desc')->required(),
+            ]),
+
+        Select::make('Icône', 'icon')
+            ->choices([
+                'Globe' => 'Globe', 'Code2' => 'Code2',
+                'Search' => 'Search', 'Rocket' => 'Rocket',
+            ])->required(),
+    ])
+    ->make();
+```
+  </Tab>
+  <Tab title="Réalisation">
+```php configuration/posts/realisations.php
+<?php
+
+use Ahon\WPCMS\PostType\PostType;
+use Extended\ACF\Fields\Image;
+use Extended\ACF\Fields\Repeater;
+use Extended\ACF\Fields\Select;
+use Extended\ACF\Fields\Text;
+use Extended\ACF\Fields\Textarea;
+use Extended\ACF\Fields\URL;
+use Extended\ACF\Fields\WysiwygEditor;
+
+PostType::create('realisation', 'Réalisation', 'Réalisations', 'realisations', 'art', true)
+    ->fields([
+        Image::make('Image', 'image'),
+        Select::make('Type de projet', 'type')
+            ->choices([
+                'Site vitrine'     => 'Site vitrine',
+                'Application web'  => 'Application web',
+                'E-commerce'       => 'E-commerce',
+            ])->required(),
+        Text::make('Année', 'year')->required(),
+        Text::make('Durée (ex: 3 semaines)', 'duration')->required(),
+        Text::make('Client', 'customer')->required(),
+        URL::make('Lien du projet', 'project_url'),
+        Textarea::make('Résultat (phrase courte)', 'result')->required()->rows(2),
+        WysiwygEditor::make('Contexte / Problème', 'challenge')->required(),
+        WysiwygEditor::make('Solution apportée', 'solution')->required(),
+        Repeater::make('Technologies utilisées', 'technologies')
+            ->fields([Text::make('Technologie', 'tech')->required()])
+            ->minRows(1),
+        Repeater::make('Fonctionnalités clés', 'features')
+            ->fields([Text::make('Fonctionnalité', 'feature')->required()])
+            ->minRows(1),
+    ])
+    ->make();
+```
+  </Tab>
+</Tabs>

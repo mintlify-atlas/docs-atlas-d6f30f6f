@@ -1,0 +1,196 @@
+---
+title: "Vite Integration: Building the React SPA for WordPress"
+sidebarTitle: "Vite"
+description: "How the PHP Vite class reads the Vite manifest and dev server hot file to inject the correct assets into the WordPress HTML shell in dev and production modes."
+---
+
+The WP SSR Framework integrates Vite through a PHP `Vite` class that bridges the WordPress PHP environment with the Vite build pipeline. In development, the class reads a `public/hot` file to locate the running dev server; in production, it parses `dist/.vite/manifest.json` to resolve hashed asset paths — both result in the correct JS and CSS being injected into the `client.php` HTML shell.
+
+## How it works
+
+<Tabs>
+  <Tab title="Development">
+    When you run `bun run dev`, the `hotFilePlugin` in `vite.config.ts` writes the dev server URL (`http://localhost:8080`) to `web/client/public/hot`.
+
+    The PHP `Vite::devServerRunning()` method reads this file. If it exists, `Vite::assets()` returns:
+
+    ```php
+    [
+        'dev'    => true,
+        'url'    => 'http://localhost:8080',
+        'client' => 'http://localhost:8080/@vite/client',
+        'entry'  => 'http://localhost:8080/src/main.tsx',
+        'css'    => [],
+    ]
+    ```
+
+    The `client.php` shell then injects the React Refresh preamble and `@vite/client` module script for HMR.
+
+    <Note>
+    The `public/hot` file is automatically removed when the dev server exits via `SIGINT`, `SIGTERM`, or `SIGHUP` handlers registered by the plugin.
+    </Note>
+  </Tab>
+  <Tab title="Production">
+    After running `bun run build`, Vite writes `dist/.vite/manifest.json` containing hashed asset paths.
+
+    The PHP `Vite::manifest()` method parses this file (cached in WordPress transients for `DAY_IN_SECONDS`). `Vite::assets()` returns:
+
+    ```php
+    [
+        'dev' => false,
+        'js'  => ['/client/dist/assets/index-abc123.js'],
+        'css' => ['/client/dist/assets/index-abc123.css'],
+    ]
+    ```
+
+    The `client.php` shell injects the hashed CSS `<link>` and JS `<script type="module">` tags.
+
+    <Tip>
+    After every production build, flush the WordPress transient cache using the **🧹 Vider le cache** button in the admin bar. This forces PHP to re-read the new manifest with updated hashes.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Build commands
+
+Run these from the `web/client/` directory:
+
+```bash
+# Start the Vite dev server with HMR on port 8080
+bun run dev
+
+# Build for production (output to dist/)
+bun run build
+
+# Build in development mode (no minification, sourcemaps)
+bun run build:dev
+
+# Preview the production build locally
+bun run preview
+
+# Run ESLint
+bun run lint
+```
+
+## `vite.config.ts`
+
+```typescript vite.config.ts
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react-swc";
+import tailwindcss from '@tailwindcss/vite'
+import path from "path";
+import fs from "fs";
+
+export default defineConfig(({ mode }) => ({
+    server: {
+        host: "::",
+        port: 8080,
+        cors: true,
+        hmr: {
+            overlay: false,
+        },
+    },
+    plugins: [
+        react(),
+        mode === "development" && hotFilePlugin(),
+        tailwindcss()
+    ].filter(Boolean),
+    resolve: {
+        alias: {
+            "@": path.resolve(__dirname, "./src"),
+        },
+    },
+    build: {
+        manifest: true,       // required by PHP Vite::manifest()
+        outDir: "dist",
+        assetsDir: "assets",
+        emptyOutDir: true,
+    },
+}));
+```
+
+Key settings:
+- `build.manifest: true` — generates `.vite/manifest.json`, required by `Vite::manifest()`.
+- `server.port: 8080` — the dev server URL written to `public/hot`.
+- `server.cors: true` — allows the WordPress PHP page to load assets from the dev server origin.
+- `@` path alias — resolves to `src/`, used throughout the codebase (`@/pages/Home`, `@/lib/wp-sync`).
+
+## TypeScript configuration
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+```
+
+The `paths` entry mirrors the `resolve.alias` in `vite.config.ts` so TypeScript can resolve `@/` imports.
+
+## Client directory layout
+
+```
+web/client/
+├── src/
+│   ├── main.tsx              # Entry point — calls boot()
+│   ├── App.tsx               # Root React component (providers, layout)
+│   ├── routes.ts             # View name → dynamic import map
+│   ├── pages/                # Page components (Home, Blog, Services…)
+│   ├── components/           # Shared UI components
+│   │   └── ui/               # shadcn/ui primitives
+│   └── lib/
+│       ├── wp-sync.ts        # WordPress data bridge
+│       ├── wp-router.tsx     # Link interception & navigation
+│       ├── normalize-*.ts    # Data normalizers per post type
+│       └── utils.ts          # Tailwind class helpers
+├── public/
+│   ├── robots.txt
+│   └── hot                   # Written by Vite dev server (gitignored)
+├── dist/                     # Production build output (gitignored)
+│   ├── .vite/manifest.json   # Asset manifest read by PHP
+│   └── assets/               # Hashed JS/CSS bundles
+├── vite.config.ts
+├── tsconfig.json
+└── package.json
+```
+
+## PHP Vite class API
+
+The `src/SSR/Vite.php` class is a singleton available via `Vite::instance()`.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `Vite::instance()` | `Vite` | Returns the singleton instance |
+| `devServerRunning()` | `string\|null` | Returns the dev server URL from `public/hot`, or `null` |
+| `manifest()` | `array\|null` | Returns the parsed `dist/.vite/manifest.json`, cached in transients |
+| `assets()` | `array` | Returns the asset injection payload for `client.php` |
+
+The `assets()` return shape in production:
+
+```php
+[
+    'dev' => false,
+    'js'  => ['/client/dist/assets/index-{hash}.js'],
+    'css' => ['/client/dist/assets/index-{hash}.css'],
+]
+```
+
+The `assets()` return shape in development:
+
+```php
+[
+    'dev'    => true,
+    'url'    => 'http://localhost:8080',
+    'client' => 'http://localhost:8080/@vite/client',
+    'entry'  => 'http://localhost:8080/src/main.tsx',
+    'css'    => [],
+]
+```

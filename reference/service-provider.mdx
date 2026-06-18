@@ -1,0 +1,215 @@
+---
+title: "ServiceProvider — Bootstrapping Application Services"
+sidebarTitle: "ServiceProvider"
+description: "BaseServiceProvider is the base class for WP SSR providers, offering register/boot lifecycle hooks, priority ordering, and Base helper utilities."
+---
+
+Service providers are the primary mechanism for bootstrapping application features in WP SSR Framework. Every provider extends `BaseServiceProvider`, which in turn extends the `Base` utility class and implements `ServiceProviderInterface`. Providers are registered with the Kernel via `withProviders()` and managed by `ProviderManager`, which sorts them by `$priority`, calls `register()` on all of them first, then calls `boot()` on all of them in order.
+
+---
+
+## `BaseServiceProvider`
+
+```php
+namespace Ahon\WPCMS\Providers;
+
+class BaseServiceProvider extends Base implements ServiceProviderInterface
+{
+    public static int $priority = 0;
+
+    public function register(): void {}
+    public function boot(): void {}
+}
+```
+
+### `register(): void`
+
+Called during the first pass over all providers. Use `register()` to bind services to the `ServicesContainer` or perform any setup that other providers may depend on.
+
+```php
+public function register(): void
+{
+    // Bind a service so other providers can resolve it
+    ServicesContainer::resolve(MyService::class);
+}
+```
+
+<Note>
+  At the time `register()` runs, **no other provider's `boot()` has been called yet**. Do not add WordPress action hooks here — use `boot()` instead.
+</Note>
+
+### `boot(): void`
+
+Called after all providers have been registered. This is the correct place to add WordPress hooks, register admin pages, or interact with any service that another provider may have bound in its own `register()`.
+
+```php
+public function boot(): void
+{
+    add_action('wp_enqueue_scripts', [$this, 'enqueueAssets']);
+    add_action('admin_menu', [$this, 'registerAdminPage']);
+}
+```
+
+### `static int $priority = 0`
+
+Controls the order in which providers are sorted before `register()` and `boot()` are called. Providers with a **lower** priority value run first; a higher value means the provider runs later in the sequence.
+
+```php
+class AnalyticsServiceProvider extends BaseServiceProvider
+{
+    public static int $priority = 10; // runs after default-priority providers
+}
+```
+
+---
+
+## `Base` class helpers
+
+All providers inherit these two utilities from the `Base` class.
+
+### `$this->service(string $class): object`
+
+Resolves a service from `ServicesContainer`. If the service class has not been instantiated yet, a new instance is created and cached as a singleton.
+
+<ParamField body="class" type="string" required>
+  The fully-qualified class name of the service to resolve (e.g. `MyService::class`).
+</ParamField>
+
+```php
+public function boot(): void
+{
+    $mailer = $this->service(MailService::class);
+    $mailer->send(...);
+}
+```
+
+<Tip>
+  `ServicesContainer::resolve()` caches instances by class name, so repeated calls to `$this->service(Foo::class)` always return the same object — similar to Laravel's container singleton binding.
+</Tip>
+
+### `$this->remember(string $key, int $ttl, callable $callback): mixed`
+
+A WordPress transient–backed memoization helper. On the first call it executes `$callback`, stores the result with `set_transient()`, and returns it. On subsequent calls within the TTL window it returns the cached value directly.
+
+<ParamField body="key" type="string" required>
+  The WordPress transient key. Must be unique application-wide and no longer than 172 characters.
+</ParamField>
+
+<ParamField body="ttl" type="integer" required>
+  Time-to-live in seconds (e.g. `3600` for one hour, `DAY_IN_SECONDS`, `WEEK_IN_SECONDS`).
+</ParamField>
+
+<ParamField body="callback" type="callable" required>
+  A closure or callable that computes and returns the value to cache.
+</ParamField>
+
+```php
+public function boot(): void
+{
+    $data = $this->remember('homepage_stats', HOUR_IN_SECONDS, function () {
+        return $this->service(StatsService::class)->compute();
+    });
+}
+```
+
+---
+
+## `ServiceProviderInterface`
+
+The interface all providers must implement:
+
+```php
+interface ServiceProviderInterface
+{
+    public function register(): void;
+    public function boot(): void;
+}
+```
+
+---
+
+## Creating a custom provider
+
+<Steps>
+  <Step title="Create the class">
+    Extend `BaseServiceProvider` in your application's `Providers` namespace.
+
+    ```php app/Providers/ContactServiceProvider.php
+    <?php
+
+    namespace Ahon\WPCMS\App\Providers;
+
+    use Ahon\WPCMS\Providers\BaseServiceProvider;
+    use Ahon\WPCMS\App\Services\MailService;
+
+    class ContactServiceProvider extends BaseServiceProvider
+    {
+        public static int $priority = 5;
+
+        public function register(): void
+        {
+            // Eagerly instantiate the mail service singleton
+            $this->service(MailService::class);
+        }
+
+        public function boot(): void
+        {
+            add_action('wp_mail_failed', function (\WP_Error $error) {
+                error_log('[ContactServiceProvider] Mail failed: ' . $error->get_error_message());
+            });
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Register with the Kernel">
+    Add your provider to the `withProviders()` array in `wp-ssr.php`.
+
+    ```php wp-ssr.php
+    Kernel::configure()
+        ->withProviders([
+            Ahon\WPCMS\App\Providers\AppServiceProvider::class,
+            Ahon\WPCMS\App\Providers\ContactServiceProvider::class, // ← added
+        ])
+        ->boot();
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Provider lifecycle diagram
+
+```
+Kernel::boot()
+  └─ ProviderManager::registerProviders($providers)
+        │
+        ├─ Sort by $priority (ascending)
+        │
+        ├─ Phase 1: foreach provider → provider->register()
+        │     (bind services, no hooks yet)
+        │
+        └─ Phase 2: foreach provider → provider->boot()
+              (add hooks, register pages, use services)
+```
+
+---
+
+## `ServicesContainer` internals
+
+`ServicesContainer::resolve(string $service)` is a lightweight singleton container:
+
+- Maintains a static `$instances` array keyed by class name.
+- On first resolution, instantiates the class with `new $service`.
+- Throws `Exception` if the class does not exist.
+- Returns the cached instance on all subsequent calls.
+
+```php
+// First call — creates instance
+$svc = ServicesContainer::resolve(CacheService::class);
+
+// Second call — returns same instance
+$svc2 = ServicesContainer::resolve(CacheService::class);
+
+var_dump($svc === $svc2); // true
+```

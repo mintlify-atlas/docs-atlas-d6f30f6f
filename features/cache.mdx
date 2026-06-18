@@ -1,0 +1,105 @@
+---
+title: "Caching System — WP SSR Framework"
+sidebarTitle: "Cache"
+description: "A two-level cache combining WordPress transients for data and static HTML files for bot delivery, with a one-click admin-bar flush button."
+---
+
+WP SSR uses a two-level caching strategy to balance dynamic data freshness with high-speed delivery. The first level stores structured data — such as the compiled Vite asset manifest — in WordPress transients, so repeated requests avoid redundant disk reads or recomputation. The second level stores fully rendered HTML snapshots in flat files on disk so that bots and crawlers receive pre-built pages with zero PHP processing. Both levels can be flushed instantly from a single button in the WordPress admin bar.
+
+## Level 1 — WordPress transient cache
+
+The `Base::remember()` helper wraps WordPress's `get_transient` / `set_transient` API into a clean, callback-based interface:
+
+```php
+protected function remember(string $key, int $ttl, callable $callback): mixed
+{
+    $cached = get_transient($key);
+
+    if ($cached !== false) {
+        return $cached;
+    }
+
+    $data = $callback();
+    set_transient($key, $data, $ttl);
+
+    return $data;
+}
+```
+
+Any class that extends `Base` can call `$this->remember()` to cache arbitrary data. The Vite integration uses this to avoid parsing the JSON asset manifest on every request:
+
+```php
+// From src/SSR/Vite.php
+public function manifest(): mixed
+{
+    $manifestPath = client_root('/dist/.vite/manifest.json');
+    $key = 'vite_manifest_' . filemtime($manifestPath);
+
+    return $this->remember($key, DAY_IN_SECONDS, function () use ($manifestPath) {
+        return json_decode(
+            file_get_contents($manifestPath),
+            true
+        );
+    });
+}
+```
+
+The cache key includes `filemtime()` so a new production build automatically produces a new key, but the old entry remains in the database until the cache is flushed or the TTL expires.
+
+<Tip>
+  After every production build (`npm run build`), flush the WordPress cache from the admin bar to force the Vite manifest to reload from the new `dist/.vite/manifest.json`. Without flushing, the old manifest entry will be served until its `DAY_IN_SECONDS` TTL expires.
+</Tip>
+
+## Level 2 — Static HTML file cache
+
+The SSG system writes fully rendered HTML files to `web/app/cache/client/static/{slug}.html` and serves them directly to detected bots with a `X-SSG-Cache: HIT` response header. This layer is managed entirely by `StaticSiteGeneratorService`. See [Static Site Generator](/features/static-site-generator) for full details.
+
+## Flushing the cache
+
+A **🧹 Vider le cache** (Flush Cache) button is added to the WordPress admin bar for any user with the `manage_options` capability.
+
+Clicking it submits a nonce-protected `GET` request to the `admin_post_flush_cache` handler:
+
+```php
+add_action('admin_post_flush_cache', function () {
+
+    if (! current_user_can('manage_options')) {
+        wp_die('Unauthorized', '403', ['response' => 403]);
+    }
+
+    if (! isset($_GET['nonce']) || ! wp_verify_nonce($_GET['nonce'], 'flush_cache_action')) {
+        wp_die('Invalid nonce', '403', ['response' => 403]);
+    }
+
+    global $wpdb;
+
+    // Delete all transient rows from wp_options
+    $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_%'");
+    $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_%'");
+
+    // Flush the object cache (Redis / Memcached if installed)
+    if (function_exists('wp_cache_flush')) {
+        wp_cache_flush();
+    }
+
+    wp_redirect(add_query_arg('cache_flushed', '1', wp_get_referer() ?: admin_url()));
+    exit;
+});
+```
+
+After the flush, the handler redirects back to the previous admin page with a `?cache_flushed=1` query parameter, which triggers a green success notice: **🧹 Cache vidé avec succès**.
+
+### What gets cleared
+
+<CardGroup cols={2}>
+  <Card title="WordPress transients" icon="database">
+    All rows in `wp_options` matching `_transient_*` or `_transient_timeout_*` are deleted, including the Vite manifest cache and any other data stored via `Base::remember()`.
+  </Card>
+  <Card title="Object cache" icon="server">
+    `wp_cache_flush()` is called unconditionally. If a persistent object cache like Redis or Memcached is installed, its in-memory store is also flushed.
+  </Card>
+</CardGroup>
+
+<Note>
+  The Flush Cache button does **not** delete static HTML files from the SSG file cache. To clear pre-rendered HTML snapshots, use the **🗑️ Clear All Cache** button on the SSG dashboard or call `StaticSiteGeneratorService::clearAll()` programmatically.
+</Note>

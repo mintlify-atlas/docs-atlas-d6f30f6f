@@ -1,0 +1,211 @@
+---
+title: "Kernel & Service Providers — WP SSR Framework"
+sidebarTitle: "Kernel & Providers"
+description: "Learn how the WP SSR Kernel boots, how service providers register and boot in priority order, and how to build your own custom provider."
+---
+
+The **Kernel** is the single entry point of the WP SSR Framework. It wires together all service providers in the correct order and delegates every cross-cutting concern — routing, caching, rate limiting, analytics, SEO, and static-site generation — to independent, swappable providers. Understanding how the Kernel and its providers work together is essential before customising any part of the framework.
+
+---
+
+## Bootstrapping the Kernel
+
+The Kernel is configured and booted inside `wp-ssr.php` using a fluent three-step chain:
+
+```php title="wp-ssr.php"
+Kernel::configure()
+    ->withProviders([
+        Ahon\WPCMS\App\Providers\AppServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RateLimitServiceProvider::class,
+        Ahon\WPCMS\App\Providers\CacheServiceProvider::class,
+        Ahon\WPCMS\App\Providers\AnalyticsServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SEOServiceProvider::class,
+        Ahon\WPCMS\App\Providers\RoutingServiceProvider::class,
+        Ahon\WPCMS\App\Providers\SSGServiceProvider::class,
+    ])
+    ->boot();
+```
+
+| Method | Description |
+|---|---|
+| `Kernel::configure()` | Creates a new `Kernel` instance and validates framework requirements (e.g. ACF Pro must be active). |
+| `->withProviders(array)` | Stores the ordered list of provider class names to register. |
+| `->boot()` | Calls `ProviderManager::registerProviders()` and schedules all WordPress hooks. |
+
+<Note>
+  `Kernel::configure()` runs a `checkThemeRequirements()` check immediately. If ACF Pro is not active, `wp_die()` is called with a descriptive error before anything else is registered.
+</Note>
+
+---
+
+## What `boot()` Wires Up
+
+Calling `boot()` schedules the following WordPress hooks in addition to running provider registration:
+
+```php title="src/Kernel.php (boot method)"
+// Providers' boot() methods fire on 'init' at their declared priority
+ProviderManager::registerProviders($this->providers);
+
+// EloquentManager initialised on 'init' (priority 10)
+add_action('init', fn () => new EloquentManager, 10);
+
+// API Router registers REST routes on 'rest_api_init' (priority 30)
+add_action('rest_api_init', fn () => (new ApiRouter('api/v1'))->init(), 30);
+
+// Custom post types & taxonomies registered on 'init' (priority 20)
+add_action('init', fn () => PostType::init(), 20);
+
+// ACF options pages registered on 'after_setup_theme'
+add_action('after_setup_theme', fn () => Option::init());
+
+// WordPress options wrapper on 'admin_init' (priority 40)
+add_action('admin_init', fn () => WP_Options::register(), 40);
+
+// Composer manager on 'wp_loaded' (priority 1)
+add_action('wp_loaded', fn () => ComposerManager::registerComposers(), 1);
+
+// Web Router intercepts requests on 'wp_loaded' (priority 5)
+add_action('wp_loaded', fn () => WebRouter::init()->handleRequest(), 5);
+```
+
+---
+
+## Built-in Providers
+
+<CardGroup cols={2}>
+  <Card title="AppServiceProvider" icon="wrench">
+    Bootstraps core application services and binds global helpers into the container.
+  </Card>
+  <Card title="RateLimitServiceProvider" icon="gauge-high">
+    Registers rate-limiting logic for API endpoints to protect against abuse.
+  </Card>
+  <Card title="CacheServiceProvider" icon="bolt">
+    Configures the application-level cache driver used by controllers (e.g. `$this->remember()`).
+  </Card>
+  <Card title="AnalyticsServiceProvider" icon="chart-bar">
+    Integrates the analytics pipeline, tracking page views and events.
+  </Card>
+  <Card title="SEOServiceProvider" icon="magnifying-glass">
+    Manages meta tags, Open Graph data, and JSON-LD schema injection per route.
+  </Card>
+  <Card title="RoutingServiceProvider" icon="route">
+    Loads and validates route configuration files; optionally registers rewrite rules.
+  </Card>
+  <Card title="SSGServiceProvider" icon="camera">
+    Triggers headless Chromium snapshots of each route, writing static HTML to `cache/client/static/`.
+  </Card>
+</CardGroup>
+
+---
+
+## The `BaseServiceProvider` Contract
+
+Every provider extends `BaseServiceProvider`, which exposes two lifecycle methods and one priority property:
+
+```php title="src/Providers/BaseServiceProvider.php"
+namespace Ahon\WPCMS\Providers;
+
+class BaseServiceProvider extends Base implements ServiceProviderInterface
+{
+    /**
+     * Higher numbers boot later (on the WordPress 'init' hook).
+     */
+    public static int $priority = 0;
+
+    /**
+     * Called immediately when the Kernel boots — before any WordPress hooks.
+     * Bind services, register singletons, or set configuration here.
+     */
+    public function register(): void {}
+
+    /**
+     * Called on the WordPress 'init' hook at the declared $priority.
+     * Safe to use any WordPress API here.
+     */
+    public function boot(): void {}
+}
+```
+
+### Lifecycle order
+
+<Steps>
+  <Step title="register() — synchronous, before hooks">
+    `ProviderManager` calls `register()` on every provider in the order they appear in `withProviders()`. No WordPress hooks have fired yet, so keep this strictly to container bindings and in-memory configuration.
+  </Step>
+  <Step title="boot() — deferred to `init`">
+    After all `register()` calls complete, each provider's `boot()` is scheduled as an `add_action('init', ...)` callback. The `$priority` property controls ordering: lower values run earlier, higher values run later.
+  </Step>
+</Steps>
+
+<Warning>
+  Never call WordPress functions like `get_option()`, `register_post_type()`, or `wp_enqueue_script()` inside `register()`. WordPress has not yet finished loading at that point. Use `boot()` instead.
+</Warning>
+
+---
+
+## Creating a Custom Provider
+
+<Steps>
+  <Step title="Create the provider class">
+    Place your provider in `app/Providers/` and extend `BaseServiceProvider`:
+
+    ```php title="app/Providers/MyFeatureServiceProvider.php"
+    namespace Ahon\WPCMS\App\Providers;
+
+    use Ahon\WPCMS\Providers\BaseServiceProvider;
+
+    class MyFeatureServiceProvider extends BaseServiceProvider
+    {
+        /**
+         * Boot after RoutingServiceProvider (priority 5 runs before this).
+         */
+        public static int $priority = 10;
+
+        public function register(): void
+        {
+            // Bind a service class (no WordPress API calls here)
+            // e.g. store config in a global registry
+        }
+
+        public function boot(): void
+        {
+            // Safe to call WordPress API here
+            add_action('admin_menu', function () {
+                add_menu_page(
+                    'My Feature',
+                    'My Feature',
+                    'manage_options',
+                    'my-feature',
+                    fn () => echo '<h1>My Feature</h1>'
+                );
+            });
+        }
+    }
+    ```
+  </Step>
+  <Step title="Register it in the Kernel">
+    Add the fully-qualified class name to the `withProviders()` array in `wp-ssr.php`:
+
+    ```php title="wp-ssr.php"
+    Kernel::configure()
+        ->withProviders([
+            // ... existing providers ...
+            Ahon\WPCMS\App\Providers\MyFeatureServiceProvider::class,
+        ])
+        ->boot();
+    ```
+  </Step>
+</Steps>
+
+### Priority reference
+
+| `$priority` | When `boot()` runs |
+|---|---|
+| `0` (default) | First — same tick as `EloquentManager` init |
+| `5` | After default providers |
+| `10` | After routing-related providers |
+| `20+` | After CPT registration |
+
+<Tip>
+  If your provider depends on custom post types being registered, set `$priority` to `30` or higher so it runs after `PostType::init()` at priority `20`.
+</Tip>

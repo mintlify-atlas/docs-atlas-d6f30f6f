@@ -1,0 +1,241 @@
+---
+title: "WP Options & Admin Configuration — WP SSR"
+sidebarTitle: "WP Options"
+description: "Reference for WP_Options, admin URL rewrites, WordPress hardening, and CORS headers configured by the WP SSR Framework's AppServiceProvider."
+---
+
+The WP SSR Framework ships a fluent `WP_Options` class (namespace `Ahon\WPCMS\Options`) that lets you configure WordPress admin behaviour through a readable, chainable API. This page covers every method on `WP_Options`, the concrete configuration applied in `configuration/options.php`, the URL rewriting provided by `AppServiceProvider`, the WordPress hardening measures that reduce attack surface, and the CORS policy applied to the REST API.
+
+---
+
+## Configuration file
+
+All `WP_Options` calls live in `web/app/mu-plugins/wp-ssr/configuration/options.php`. The framework boots this file automatically via `WP_Options::register()`, which is called from the mu-plugin bootstrap on the `init` action.
+
+```php configuration/options.php
+<?php
+
+/**
+ * WP_Options
+ * Use this to configure your WordPress options.
+ */
+(new \Ahon\WPCMS\Options\WP_Options)
+    ->removeMenuPages([
+        'tools.php',
+        'edit-comments.php',
+        'edit.php?post_type=acf-field-group',
+//      'edit.php?post_type=page',
+        'edit.php',
+        'themes.php',
+        'options-discussion.php',
+    ])
+    ->maxPostPerPages(20)
+    ->adminTheme('modern');
+```
+
+Every method returns the same `WP_Options` instance, so calls chain freely in any order.
+
+---
+
+## `WP_Options` methods
+
+### `->removeMenuPages(array $pages)`
+
+Calls WordPress's `remove_menu_page()` for each entry in `$pages`. Each value must be the **URL slug** of a top-level admin menu item — the same string that appears in the `href` of the admin sidebar link.
+
+<ParamField path="pages" type="array" required>
+  An indexed array of admin menu slugs to hide. Pass the query-string form for post-type screens (e.g. `'edit.php?post_type=acf-field-group'`).
+</ParamField>
+
+The current configuration removes the following pages:
+
+| Slug | Screen removed |
+|---|---|
+| `tools.php` | Tools |
+| `edit-comments.php` | Comments |
+| `edit.php?post_type=acf-field-group` | ACF Field Groups |
+| `edit.php` | Posts |
+| `themes.php` | Appearance |
+| `options-discussion.php` | Settings → Discussion |
+
+<Note>
+  `remove_menu_page()` hides the link from the sidebar but does **not** prevent direct navigation to the URL. Combine this with role-based access control if you need to block the pages entirely.
+</Note>
+
+The `edit.php?post_type=page` (Pages) entry is commented out in the real config — uncomment it if your project does not use WordPress pages.
+
+---
+
+### `->maxPostPerPages(int $count)`
+
+Persists the WordPress `posts_per_page` option via `update_option()`. This governs the default number of posts returned by `WP_Query` when no explicit `posts_per_page` argument is provided — including REST API list endpoints.
+
+<ParamField path="count" type="integer" required>
+  Maximum number of posts per page. The current configuration uses `20`.
+</ParamField>
+
+```php
+->maxPostPerPages(20)
+```
+
+<Tip>
+  REST API consumers can always override this on a per-request basis with the `?per_page=` query parameter, up to the WordPress maximum of `100`.
+</Tip>
+
+---
+
+### `->adminTheme(string $theme)`
+
+Sets the WordPress admin colour scheme for the currently authenticated user and **removes the colour-scheme picker** from the profile screen so users cannot override the project's chosen theme.
+
+Internally this calls:
+```php
+update_user_meta(get_current_user_id(), 'admin_color', $theme);
+remove_action('admin_color_scheme_picker', 'admin_color_scheme_picker');
+```
+
+<ParamField path="theme" type="string" required>
+  A registered admin colour scheme slug. Built-in WordPress options include `default`, `light`, `modern`, `blue`, `coffee`, `ectoplasm`, `midnight`, `ocean`, `sunrise`. The current configuration uses `'modern'`.
+</ParamField>
+
+```php
+->adminTheme('modern')
+```
+
+---
+
+## Additional `WP_Options` methods
+
+The class exposes further methods that are not used in the default configuration but are available for customisation:
+
+<Accordion title="->hideAdminBar(bool $hide)">
+  Calls `show_admin_bar(!$hide)` to toggle the frontend admin bar for logged-in users. Note that `AppServiceProvider::hardenWordPress()` globally disables the admin bar on the frontend via the `show_admin_bar` filter — this method is an alternative way to achieve the same effect on a per-context basis.
+
+  ```php
+  ->hideAdminBar(true)
+  ```
+</Accordion>
+
+<Accordion title="->showOnFront(string $type)">
+  Updates the `show_on_front` WordPress option. Accepted values are `'page'` (static front page) or `'posts'` (latest posts). Because WP SSR renders the frontend through a React SPA, WordPress's own front-page template is bypassed entirely — this setting only affects the REST API response for `wp/v2/settings`.
+
+  ```php
+  ->showOnFront('page')
+  ```
+</Accordion>
+
+<Accordion title="->pageOnFront(string $slug)">
+  Sets the `page_on_front` option to the ID of the page whose **title** matches `$slug`. Requires `show_on_front` to be `'page'`. Calls `wp_die()` if no matching page is found.
+
+  ```php
+  ->pageOnFront('Home')
+  ```
+</Accordion>
+
+<Accordion title="->useClassicEditor(array $postTypes)">
+  Forces Classic Editor for all posts of the given post types. Requires the Classic Editor plugin (`Classic_Editor` class) to be active; silently no-ops when it is absent.
+
+  ```php
+  ->useClassicEditor(['contact', 'project'])
+  ```
+</Accordion>
+
+---
+
+## URL rewriting (`AppServiceProvider`)
+
+`AppServiceProvider::boot()` registers two WordPress rewrite rules that map clean URLs to their internal equivalents. Rules are registered with `'top'` priority so they run before any theme or plugin rewrites.
+
+### `/api/v1/*` → REST API
+
+```php
+add_rewrite_rule(
+    '^api/v1/?(.*)',
+    'index.php?rest_route=/api/v1/$matches[1]',
+    'top'
+);
+```
+
+Any request to `/api/v1/<path>` is internally rewritten to WordPress's REST router at `/wp-json/api/v1/<path>`. This keeps the public API surface clean (no `/wp-json` prefix in external URLs) while still routing through the standard `WP_REST_Server`.
+
+<Tip>
+  After adding or modifying rewrite rules, flush permalinks once via **Settings → Permalinks → Save Changes**, or call `flush_rewrite_rules()` in a one-time activation hook.
+</Tip>
+
+### `/admin` → WordPress login
+
+```php
+add_rewrite_rule(
+    '^admin/?$',
+    'wp-login.php',
+    'top'
+);
+```
+
+Visiting `/admin` on the public domain transparently serves `wp-login.php` (located at `/wp/wp-login.php` in the Bedrock layout). This provides a canonical, memorable admin entry-point without exposing the `/wp/wp-login.php` path in documentation or bookmarks.
+
+---
+
+## WordPress hardening (`hardenWordPress`)
+
+`AppServiceProvider::hardenWordPress()` removes several WordPress default features that are unnecessary in a headless context and that represent common attack or information-disclosure vectors.
+
+<CardGroup cols={2}>
+  <Card title="Emojis disabled" icon="face-smile">
+    Removes `print_emoji_detection_script` from `wp_head` and `print_emoji_styles` from `wp_print_styles`, eliminating an external DNS request to `s.w.org` on every page load.
+  </Card>
+  <Card title="Embeds disabled" icon="code">
+    Removes `wp_oembed_add_discovery_links` and `wp_oembed_add_host_js` from `wp_head`, preventing WordPress from advertising its oEmbed endpoint and loading the oEmbed consumer script.
+  </Card>
+  <Card title="Generator tag removed" icon="tag">
+    Removes the `<meta name="generator">` tag injected by `wp_generator`, which would otherwise advertise the WordPress version to scanners.
+  </Card>
+  <Card title="XML-RPC disabled" icon="xmark">
+    Adds a filter on `xmlrpc_enabled` returning `false`, closing the XML-RPC endpoint entirely. This blocks the most common WordPress brute-force and DDoS amplification vectors.
+  </Card>
+  <Card title="REST user discovery removed" icon="user-slash">
+    Unsets the `/wp/v2/users` and `/wp/v2/users/{id}` endpoints from `rest_endpoints`. This prevents unauthenticated enumeration of WordPress usernames via the REST API.
+  </Card>
+  <Card title="Frontend admin bar hidden" icon="bars">
+    Adds a filter on `show_admin_bar` returning `false`, so the WordPress toolbar is never rendered on the frontend — it has no purpose in a headless SPA and would inject unwanted markup and styles.
+  </Card>
+</CardGroup>
+
+---
+
+## CORS headers (REST API)
+
+The `optimizeAPI()` method hooks into `rest_api_init` to set permissive CORS headers for all REST responses:
+
+```php
+add_action('rest_api_init', function () {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET');
+    header('Access-Control-Allow-Headers: Content-Type');
+});
+```
+
+| Header | Value | Purpose |
+|---|---|---|
+| `Access-Control-Allow-Origin` | `*` | Allows any origin to read REST responses (suitable for a public read-only API) |
+| `Access-Control-Allow-Methods` | `GET` | Restricts cross-origin requests to safe, read-only `GET` operations |
+| `Access-Control-Allow-Headers` | `Content-Type` | Permits the `Content-Type` request header in cross-origin calls |
+
+<Warning>
+  The wildcard `Access-Control-Allow-Origin: *` is intentional for a public read-only content API. If you add write endpoints (POST/PATCH/DELETE) that rely on cookie-based authentication, you must tighten this to a specific origin and also respond to `OPTIONS` preflight requests — a wildcard origin is incompatible with `credentials: 'include'` in the browser's Fetch API.
+</Warning>
+
+The same `optimizeAPI()` method also sets additional response headers for all REST calls and removes the REST API `<link>` tag from `wp_head` to avoid advertising the REST URL in HTML source:
+
+```php
+// Force JSON response headers
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: public, max-age=300');
+header('Vary: Accept-Encoding');
+header('X-Powered-By: API');
+header('X-API-Cache: enabled');
+
+// Remove REST discovery links from HTML <head>
+remove_action('wp_head', 'rest_output_link_wp_head');
+remove_action('template_redirect', 'rest_output_link_header', 11);
+```

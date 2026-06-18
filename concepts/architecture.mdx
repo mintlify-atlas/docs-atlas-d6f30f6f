@@ -1,0 +1,117 @@
+---
+title: "Static-Hybrid Headless Architecture — WP SSR"
+sidebarTitle: "Architecture"
+description: "Deep-dive into WP SSR's three-layer static-hybrid headless architecture: how PHP, WordPress, and a React SPA collaborate across every request."
+---
+
+WP SSR is a **static-hybrid headless framework** built as a must-use plugin on top of [Bedrock](https://roots.io/bedrock/) and [Acorn](https://roots.io/acorn/). It replaces the classic WordPress theme layer with a PHP `Kernel` that intercepts every HTTP request, hands data to a controller, and returns the shell of a React SPA — which is either rendered live for human visitors or served as a pre-generated static HTML snapshot for bots and search crawlers.
+
+---
+
+## Three-Layer Architecture
+
+<CardGroup cols={3}>
+  <Card title="CMS Layer" icon="database">
+    WordPress admin, ACF Pro custom fields, custom post types and taxonomies, options pages. Content editors never touch code — they work entirely inside the familiar WordPress dashboard.
+  </Card>
+  <Card title="Application Layer" icon="gear">
+    The WP SSR `Kernel`, service providers, PHP controllers, and two routers (web + REST API). This layer owns every business-logic and data-access concern.
+  </Card>
+  <Card title="Presentation Layer" icon="browser">
+    A React + Vite SPA compiled to `cache/client/`. In production the SSG provider snapshots each route to static HTML for bots, while human browsers always receive the live SPA shell.
+  </Card>
+</CardGroup>
+
+---
+
+## Request Lifecycle
+
+The following steps describe what happens from the moment a browser (or a bot) sends an HTTP request until a response is returned.
+
+<Steps>
+  <Step title="Bedrock boots WordPress">
+    Bedrock's `web/wp/wp-load.php` initialises the WordPress environment. Composer autoloading is already in place, so every WP SSR class is available immediately.
+  </Step>
+  <Step title="Acorn registers the theme provider">
+    On the `after_setup_theme` hook (priority `0`), `wp-ssr.php` calls `Application::configure()->withProviders([ThemeServiceProvider::class])->boot()` to wire up the Acorn container.
+  </Step>
+  <Step title="Kernel registers service providers">
+    Also in `wp-ssr.php`, `Kernel::configure()->withProviders([...])->boot()` is called. `ProviderManager::registerProviders()` iterates the provider list, calls `register()` on each one immediately, then schedules every `boot()` method on the `init` hook, sorted by `$priority`.
+  </Step>
+  <Step title="`init` fires — post types, Eloquent, and providers boot">
+    At `init` priority `10`, `EloquentManager` is initialised and tracks which post-type classes exist. At priority `20`, `PostType::init()` registers all custom post types and their ACF field groups. Each provider's `boot()` runs at its declared priority.
+  </Step>
+  <Step title="`rest_api_init` fires — API Router registers REST routes">
+    At priority `30`, `ApiRouter` loads `configuration/routes/api.php` and registers every `ApiRouteDefinition` with WordPress's `register_rest_route()` under the `api/v1` namespace.
+  </Step>
+  <Step title="`wp_loaded` fires — Web Router intercepts the request">
+    At priority `5`, `WebRouter::init()->handleRequest()` is called. The router checks the current URI against its static route map and CPT route map. WordPress URL-matching logic never runs for matched routes.
+  </Step>
+  <Step title="Bot detection and static cache check">
+    Before dispatching to a controller, `BotDetector::isBot()` inspects the `User-Agent`. If the visitor is a crawler and a matching file exists in `cache/client/static/{slug}.html`, that file is served directly with `X-SSG-Cache: HIT` and the process exits — no PHP controller runs.
+  </Step>
+  <Step title="Controller builds the payload and renders the SPA shell">
+    For human visitors the matched controller method is instantiated and called. It queries the database via the Eloquent ORM, composes a data array, and returns the HTML shell of the React SPA (including the JSON payload embedded in the page). The response is echoed and PHP exits.
+  </Step>
+  <Step title="React SPA mounts in the browser">
+    The browser receives the SPA shell, Vite hydrates React, and the client-side router takes over navigation. Subsequent page transitions are handled entirely client-side without additional PHP round-trips.
+  </Step>
+  <Step title="SSG snapshots routes for bots">
+    The `SSGServiceProvider` schedules a headless Chromium crawl of all registered routes after content is published. Each route is saved to `cache/client/static/{slug}.html`, making the next bot request instantaneous.
+  </Step>
+</Steps>
+
+---
+
+## WordPress Hooks Reference
+
+| Hook | Priority | What WP SSR does |
+|---|---|---|
+| `after_setup_theme` | `0` | Acorn boots; WP SSR `wp-ssr.php` runs |
+| `init` | `10` | `EloquentManager` initialised |
+| `init` | `20` | `PostType::init()` — registers CPTs & taxonomies |
+| `init` | `$priority` | Each provider's `boot()` method runs |
+| `admin_init` | `40` | `WP_Options::register()` — WordPress options wrapper |
+| `rest_api_init` | `30` | `ApiRouter` registers all REST routes |
+| `wp_loaded` | `1` | `ComposerManager::registerComposers()` |
+| `wp_loaded` | `5` | `WebRouter::init()->handleRequest()` |
+
+<Note>
+  `wp_loaded` fires after WordPress has fully loaded but before any template rendering. Running the web router here guarantees it intercepts every frontend request while still having access to the full WordPress API.
+</Note>
+
+---
+
+## Directory Structure
+
+```
+mu-plugins/wp-ssr/
+├── wp-ssr.php                  # Entry point — Kernel bootstrap
+├── src/
+│   ├── Kernel.php              # Core kernel class
+│   ├── Providers/              # BaseServiceProvider, ProviderManager
+│   ├── Routing/
+│   │   ├── Web/                # WebRouter, WebRoute, WebRouteDefinition
+│   │   └── Api/                # ApiRouter, ApiRoute, ApiRouteDefinition
+│   ├── Eloquent/               # EloquentCPT, QueryBuilder, EloquentManager
+│   └── PostType/               # PostType fluent builder
+├── app/
+│   ├── Controllers/
+│   │   ├── Web/                # HomeController, ServiceController, …
+│   │   └── Api/                # ContactController, …
+│   ├── PostTypes/              # Generated Eloquent model classes
+│   ├── Providers/              # AppServiceProvider, RoutingServiceProvider, …
+│   └── Middlewares/            # HealthAuthGuard, …
+└── configuration/
+    ├── routes/
+    │   ├── web.php             # WebRoute definitions
+    │   └── api.php             # ApiRoute definitions
+    └── posts/
+        ├── article.php         # Article CPT definition
+        ├── service.php         # Service CPT definition
+        └── realisations.php    # Realisation CPT definition
+```
+
+<Tip>
+  All paths are relative to `web/app/mu-plugins/wp-ssr/`. The `app/` directory is yours to edit; the `src/` directory is the framework core.
+</Tip>

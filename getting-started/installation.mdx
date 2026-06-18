@@ -1,0 +1,193 @@
+---
+title: "Installing WP SSR Framework on Bedrock"
+sidebarTitle: "Installation"
+description: "Step-by-step guide to cloning the WP SSR Framework repo, installing Composer and Node dependencies, configuring the .env file, and running WordPress core install."
+---
+
+This page walks you through a complete local installation of WP SSR Framework from a fresh clone to a running WordPress site. Because the framework is built on Bedrock, WordPress core and all plugins are managed by Composer — there are no manual file uploads or wp-admin plugin installers involved. By the end of this guide you will have a working WordPress install with the `wp-ssr` mu-plugin booted and the React SPA ready to be served.
+
+## Prerequisites
+
+Before you begin, make sure the following tools are available on your machine:
+
+- **PHP 8.1+** with the `mysqli`, `mbstring`, `xml`, and `curl` extensions enabled
+- **Composer 2** (`composer --version`)
+- **MySQL 8.0+** or MariaDB 10.6+, with an empty database and a dedicated user created
+- **Node.js LTS** or **Bun** (the client uses Bun — `bun --version`)
+- **WP-CLI** (`wp --version`) for the core install step
+- **ACF Pro** — a valid license is required; the plugin must be available to install
+
+<Warning>
+  ACF Pro must be installed and activated **before** the WP SSR Kernel boots. The `Kernel::checkThemeRequirements()` method calls `function_exists('acf_add_options_page')` on every request and halts WordPress with a fatal error if ACF Pro is missing. Do not skip this step.
+</Warning>
+
+## Installation steps
+
+<Steps>
+  ### Clone the repository
+
+  Clone the project to your local development directory:
+
+  ```bash
+  git clone https://github.com/Ahondev/portfolio-v2.git my-project
+  cd my-project
+  ```
+
+  ### Install PHP dependencies
+
+  Run Composer from the project root. This installs WordPress core to `web/wp`, mu-plugins to `web/app/mu-plugins/`, and all framework PHP dependencies declared in both `composer.json` files:
+
+  ```bash
+  composer install
+  ```
+
+  <Note>
+    The root `composer.json` installs `roots/wordpress 6.9.1` to `web/wp` via the `wordpress-install-dir` extra. The `wp-ssr` mu-plugin's own `composer.json` (inside `web/app/mu-plugins/wp-ssr/`) is picked up automatically because Bedrock's autoloader requires it.
+  </Note>
+
+  ### Copy and populate the environment file
+
+  Copy the example environment file to create your local `.env`:
+
+  ```bash
+  cp .env.example .env
+  ```
+
+  Open `.env` in your editor and fill in all required values. See the full variable reference below.
+
+  ```dotenv
+  DB_NAME=''
+  DB_USER=''
+  DB_PASSWORD=''
+
+  # Optionally, you can use a data source name (DSN)
+  # When using a DSN, you can remove the DB_NAME, DB_USER, DB_PASSWORD, and DB_HOST variables
+  # DATABASE_URL='mysql://database_user:database_password@database_host:database_port/database_name'
+
+  # Optional database variables
+  # DB_HOST='localhost'
+  # DB_PREFIX='wp_'
+
+  WP_ENV='development'
+  WP_HOME=''
+  WP_SITEURL="${WP_HOME}/wp"
+
+  # Telegram BOT
+  TELEGRAM_BOT_TOKEN=''
+  TELEGRAM_CHAT_ID=''
+
+  # api.ahon.dev
+  WEB_RENDER_TOKEN=''
+
+  # https://it-tools.tech/token-generator
+  HEALTH_ENDPOINT_TOKEN=''
+
+  # Specify optional debug.log path
+  # WP_DEBUG_LOG='/path/to/debug.log'
+
+  # Generate your keys here: https://roots.io/salts.html
+  AUTH_KEY=''
+  SECURE_AUTH_KEY=''
+  LOGGED_IN_KEY=''
+  NONCE_KEY=''
+  AUTH_SALT=''
+  SECURE_AUTH_SALT=''
+  LOGGED_IN_SALT=''
+  NONCE_SALT=''
+  ```
+
+  At minimum you **must** set:
+
+  | Variable | Example | Purpose |
+  |---|---|---|
+  | `DB_NAME` | `my_wp_db` | MySQL database name |
+  | `DB_USER` | `wp_user` | MySQL username |
+  | `DB_PASSWORD` | `s3cr3t` | MySQL password |
+  | `WP_ENV` | `development` | Environment name (`development`, `staging`, `production`) |
+  | `WP_HOME` | `http://localhost:8080` | Full URL to the site root |
+  | `WP_SITEURL` | `${WP_HOME}/wp` | URL to the WordPress core directory |
+
+  Generate WordPress security salts at [roots.io/salts.html](https://roots.io/salts.html) and paste them into the corresponding variables.
+
+  ### Run WordPress core install
+
+  Use WP-CLI to create the database tables and create the admin user. Run this from the project root:
+
+  ```bash
+  wp core install \
+    --url="http://localhost:8080" \
+    --title="My Site" \
+    --admin_user="admin" \
+    --admin_password="changeme" \
+    --admin_email="admin@example.com"
+  ```
+
+  ### Install and activate ACF Pro
+
+  Download the ACF Pro plugin zip from [advancedcustomfields.com](https://www.advancedcustomfields.com) and install it:
+
+  ```bash
+  # Via WP-CLI (if you have a direct download URL from your ACF account)
+  wp plugin install /path/to/advanced-custom-fields-pro.zip --activate
+
+  # Or copy the plugin folder manually
+  cp -r advanced-custom-fields-pro web/app/plugins/
+  wp plugin activate advanced-custom-fields-pro
+  ```
+
+  ### Verify the mu-plugin is loaded
+
+  Bedrock autoloads all mu-plugins from `web/app/mu-plugins/`. The `wp-ssr` directory is already in place after `composer install`. Verify it is active:
+
+  ```bash
+  wp plugin list --status=must-use
+  ```
+
+  You should see `wp-ssr` (or `WP SSR Framework`) listed in the output.
+
+  ### Build the React SPA (optional for development)
+
+  The SPA lives in `web/client/`. Install dependencies and start the Vite dev server:
+
+  ```bash
+  cd web/client
+  bun install
+  bun run dev      # development server with HMR
+  # or
+  bun run build    # production build to web/client/dist/
+  ```
+</Steps>
+
+## What Composer installs
+
+The root `composer.json` declares the following key packages:
+
+| Package | Version | Installed to |
+|---|---|---|
+| `roots/wordpress` | `6.9.1` | `web/wp` |
+| `roots/bedrock-autoloader` | `^1.0` | (library) |
+| `vlucas/phpdotenv` | `^5.5` | (library) |
+| `composer/installers` | `^2.2` | (library) |
+| `wpackagist-theme/twentytwentyfive` | `^1.0` | `web/app/themes/` |
+
+The `wp-ssr` mu-plugin's own `composer.json` additionally requires:
+
+| Package | Version | Purpose |
+|---|---|---|
+| `roots/acorn` | `^5.0` | Service container, Blade, CLI |
+| `vinkla/extended-acf` | `^14.6` | Typed PHP ACF field group definitions |
+| `symfony/var-dumper` | `^7.4` | Debug dumping in development |
+
+## Troubleshooting
+
+<Accordion title="WordPress shows 'You need to install Acorn to use this site'">
+  Roots Acorn is a dependency of the `wp-ssr` mu-plugin and is installed via Composer into `web/app/mu-plugins/wp-ssr/vendor/`. If you see this error, run `composer install` inside the `web/app/mu-plugins/wp-ssr/` directory, or ensure the root `composer install` completed without errors.
+</Accordion>
+
+<Accordion title="Fatal error: 'You must install and activate ACF Pro plugin'">
+  The Kernel's `checkThemeRequirements()` ran before ACF Pro was active. Activate ACF Pro via WP-CLI (`wp plugin activate advanced-custom-fields-pro`) and reload the page.
+</Accordion>
+
+<Accordion title="DB_NAME / DB_USER / DB_PASSWORD are required but missing">
+  Bedrock's `config/application.php` calls `$dotenv->required(['DB_NAME', 'DB_USER', 'DB_PASSWORD'])` unless `DATABASE_URL` is set. Ensure these variables are present and non-empty in your `.env` file.
+</Accordion>
